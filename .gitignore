@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv/
+venv/
+ENV/
+downloads/
+*.pdf
+*.png
+.vscode/
+.idea/
+*.log
+database.db
+postgres-data/
+.claude/

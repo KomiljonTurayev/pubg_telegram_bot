@@ -1,0 +1,7 @@
+python-telegram-bot==20.8
+yt-dlp
+psycopg2-binary
+python-dotenv
+matplotlib
+reportlab
+asyncio
