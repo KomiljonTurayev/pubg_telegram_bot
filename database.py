@@ -1,3 +1,4 @@
+import os
 import psycopg2
 from psycopg2 import pool
 import asyncio
@@ -15,11 +16,32 @@ class Database:
                 dbname=Config.DB_NAME,
                 user=Config.DB_USER,
                 password=Config.DB_PASS,
-                host=Config.DB_HOST
+                host=Config.DB_HOST,
+                port=Config.DB_PORT
             )
+            self._apply_schema()
         except Exception as e:
             logger.error(f"DB ulanishda xatolik: {e}")
             raise
+
+    def _apply_schema(self):
+        """schema.sql ni bir marta ishga tushirish (CREATE TABLE IF NOT EXISTS)."""
+        schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
+        if not os.path.exists(schema_path):
+            return
+        with open(schema_path, "r", encoding="utf-8") as f:
+            sql = f.read()
+        conn = self.connection_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+            conn.commit()
+            logger.info("Schema muvaffaqiyatli qo'llandi.")
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"Schema qo'llashda xatolik (ehtimol allaqachon mavjud): {e}")
+        finally:
+            self.connection_pool.putconn(conn)
 
     def _execute(self, query, params=None, fetchone=False, fetchall=False, commit=False):
         conn = self.connection_pool.getconn()

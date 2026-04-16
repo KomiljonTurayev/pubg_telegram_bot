@@ -2,6 +2,8 @@ import logging
 import os
 import warnings
 import traceback
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 warnings.filterwarnings("ignore", message=".*per_message=False.*", category=Warning)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, ReplyKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedAudio
 from telegram.ext import (
@@ -483,10 +485,29 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
     await update.message.reply_text(f"📢 Xabar {sent_count}/{len(users)} ta foydalanuvchiga yuborildi.")
 
+def run_health_server():
+    """Render uchun minimal HTTP health-check serveri."""
+    port = int(os.getenv("PORT", 10000))
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, *args):
+            pass  # HTTP loglarni o'chirish
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+
 def main():
     if not Config.BOT_TOKEN:
         logger.error("BOT_TOKEN topilmadi! .env faylini tekshiring.")
         return
+
+    # Render uchun health-check serverni fon oqimida ishga tushirish
+    threading.Thread(target=run_health_server, daemon=True).start()
 
     # Vaqtinchalik fayllarni tozalash
     cleanup_temp_files()
