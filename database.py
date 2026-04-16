@@ -48,19 +48,24 @@ class Database:
         try:
             with conn.cursor() as cursor:
                 cursor.execute(query, params or ())
+                result = None
+                if fetchone:
+                    result = cursor.fetchone()
+                elif fetchall:
+                    result = cursor.fetchall()
                 if commit:
                     conn.commit()
-                if fetchone:
-                    return cursor.fetchone()
-                if fetchall:
-                    return cursor.fetchall()
+                return result
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             self.connection_pool.putconn(conn)
 
     async def run_async(self, query, params=None, **kwargs):
         """Blocking DB chaqiruvlarini asinxron bajarish."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._execute, query, params, 
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._execute, query, params,
                                         kwargs.get('fetchone', False),
                                         kwargs.get('fetchall', False),
                                         kwargs.get('commit', False))
@@ -77,6 +82,10 @@ class Database:
     async def is_admin_db(self, tg_id):
         res = await self.run_async("SELECT is_admin FROM users WHERE tg_id = %s", (tg_id,), fetchone=True)
         return res[0] if res else False
+
+    async def add_product(self, name, description, price, image_url):
+        query = "INSERT INTO products (name, description, price, image_url) VALUES (%s, %s, %s, %s)"
+        await self.run_async(query, (name, description, price, image_url), commit=True)
 
     async def get_products(self):
         return await self.run_async("SELECT * FROM products", fetchall=True)

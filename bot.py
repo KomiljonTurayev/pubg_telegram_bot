@@ -14,8 +14,7 @@ from telegram.error import Conflict, NetworkError, TimedOut
 from config import Config
 from database import db
 from utils import admin_only, ban_check, create_stat_chart, generate_receipt_pdf, cleanup_temp_files
-import music_menu
-from music_menu import music_main_menu, music_start_search, SEARCH_MUSIC
+from music_menu import SEARCH_MUSIC
 import music_search
 import music_downloader
 
@@ -161,11 +160,11 @@ async def music_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎵 <b>Musiqa qidiruvi</b>\n"
         "<code>─────────────────────</code>\n"
-        "🔎 Qo'shiq nomi yoki ijrochi nomini yozing:\n\n"
+        "🔎 Qo'shiq nomi, ijrochi yoki YouTube havolasini yozing:\n\n"
         "  • <i>Sherali Jo'rayev - Karvon</i>\n"
         "  • <i>Dua Lipa - Levitating</i>\n"
-        "  • <i>The Weeknd Blinding Lights</i>\n\n"
-        "💡 <i>Havola ham yuborishingiz mumkin (YouTube, SoundCloud...)</i>",
+        "  • <i>youtube.com/watch?v=...</i>\n\n"
+        "❌ <i>Chiqish uchun «bekor» yozing</i>",
         parse_mode=PARSE_MODE
     )
     return SEARCH_MUSIC
@@ -547,7 +546,11 @@ def main():
         states={
             SEARCH_MUSIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, music_search.process_music_search)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_process)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_process),
+            MessageHandler(filters.Text(["❌ Bekor", "bekor"]), cancel_process),
+        ],
+        allow_reentry=True,
     )
 
     async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -592,7 +595,7 @@ def main():
     app.add_handler(MessageHandler(filters.Text("🔝 Top 10"), show_top_music))
     app.add_handler(MessageHandler(filters.Text("📦 Barcha Buyurtmalar"), view_all_orders_admin))
     app.add_handler(MessageHandler(filters.Text("📊 Statistika (Admin)"), admin_dashboard))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Entity("url"), music_downloader.handle_incoming_link)) # Linklarni aniqlash
+    app.add_handler(MessageHandler(filters.Entity("url"), music_downloader.handle_incoming_link))
 
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(music_conv)
@@ -602,7 +605,8 @@ def main():
     app.add_handler(CallbackQueryHandler(music_downloader.show_music_options, pattern="^show_music_options_"))
     app.add_handler(CallbackQueryHandler(music_downloader.show_video_quality, pattern="^vq_"))
     app.add_handler(CallbackQueryHandler(music_downloader.handle_media_download, pattern="^(dl|vdl)_"))
-    app.add_handler(CallbackQueryHandler(music_downloader.cancel_dl_callback, pattern="^cancel_dl$")) # Yuklashni bekor qilish
+    app.add_handler(CallbackQueryHandler(music_downloader.cancel_dl_callback, pattern="^cancel_dl$"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.message.delete(), pattern="^close_search$"))
     app.add_handler(CallbackQueryHandler(update_status_callback, pattern="^st_"))
     app.add_handler(buy_conv)
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
