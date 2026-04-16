@@ -1,4 +1,5 @@
 import os
+import gc
 import asyncio
 import yt_dlp
 import re
@@ -232,13 +233,9 @@ async def handle_media_download(
             pass
 
     async with download_semaphore:
-        folder = "downloads"
+        folder = "/tmp/botdl"
         os.makedirs(folder, exist_ok=True)
         ts = int(time.time())
-        # Fixed output name — no %(ext)s so we always know the exact path
-        # For video: will be renamed by merge_output_format → .mp4
-        # For audio: FFmpegExtractAudio will produce .mp3
-        # We use a stable stem and detect ext after download
         out_stem = f"{folder}/dl_{ts}"
         outtmpl = out_stem + ".%(ext)s"
 
@@ -271,10 +268,8 @@ async def handle_media_download(
                 uploader = info.get("uploader", "Artist")
 
                 if is_video:
-                    # merge_output_format="mp4" always produces <stem>.mp4
                     file_path = out_stem + ".mp4"
                     if not os.path.exists(file_path):
-                        # Fallback: find any new mp4 in downloads folder
                         files_after = set(os.listdir(folder))
                         new_files = files_after - files_before
                         mp4_files = [f for f in new_files if f.endswith(".mp4")]
@@ -290,16 +285,17 @@ async def handle_media_download(
                         f"<code>─────────────────────</code>\n"
                         f"📊 Sifat: {qual_label}  •  {file_size_mb:.1f} MB"
                     )
-                    await context.bot.send_video(
-                        chat_id=update.effective_chat.id,
-                        video=open(file_path, "rb"),
-                        caption=caption,
-                        parse_mode=PARSE_MODE,
-                        supports_streaming=True,
-                        read_timeout=120,
-                        write_timeout=120,
-                        connect_timeout=30,
-                    )
+                    with open(file_path, "rb") as f:
+                        await context.bot.send_video(
+                            chat_id=update.effective_chat.id,
+                            video=f,
+                            caption=caption,
+                            parse_mode=PARSE_MODE,
+                            supports_streaming=True,
+                            read_timeout=120,
+                            write_timeout=120,
+                            connect_timeout=30,
+                        )
                 else:
                     file_path = out_stem + ".mp3"
                     if not os.path.exists(file_path):
@@ -317,16 +313,17 @@ async def handle_media_download(
                         f"<code>─────────────────────</code>\n"
                         f"🎧 MP3 • 192 kbps"
                     )
-                    sent = await context.bot.send_audio(
-                        chat_id=update.effective_chat.id,
-                        audio=open(file_path, "rb"),
-                        title=title,
-                        performer=uploader,
-                        caption=caption,
-                        parse_mode=PARSE_MODE,
-                        read_timeout=120,
-                        write_timeout=120,
-                    )
+                    with open(file_path, "rb") as f:
+                        sent = await context.bot.send_audio(
+                            chat_id=update.effective_chat.id,
+                            audio=f,
+                            title=title,
+                            performer=uploader,
+                            caption=caption,
+                            parse_mode=PARSE_MODE,
+                            read_timeout=120,
+                            write_timeout=120,
+                        )
                     if video_id != "external":
                         await db.cache_music(video_id, sent.audio.file_id, title, uploader)
                         await db.increment_music_count(video_id)
@@ -341,17 +338,15 @@ async def handle_media_download(
                 parse_mode=PARSE_MODE,
             )
         finally:
-            # Clean up all files created during this download session
-            if file_path and os.path.exists(file_path):
-                os.remove(file_path)
-            # Also clean leftover intermediate streams (e.g. .f398.mp4, .f140.m4a)
+            # Shu download sessiyasida yaratilgan BARCHA fayllarni o'chirish
             for f in os.listdir(folder):
-                fpath = os.path.join(folder, f)
-                if f.startswith(f"dl_{ts}") and fpath != file_path:
+                if f.startswith(f"dl_{ts}"):
                     try:
-                        os.remove(fpath)
+                        os.remove(os.path.join(folder, f))
                     except OSError:
                         pass
+            # Python garbage collector ni qo'lda ishga tushirish
+            gc.collect()
 
 
 # ──────────────────────────────────────────────────────────

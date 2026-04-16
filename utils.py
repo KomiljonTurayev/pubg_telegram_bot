@@ -53,7 +53,7 @@ def create_stat_chart(growth_data):
 
 def generate_receipt_pdf(order_id, full_name, product_name, amount, pubg_id, phone):
     """To'lov kvitansiyasini PDF shaklida generatsiya qilish."""
-    filename = f"receipt_{order_id}.pdf"
+    filename = f"/tmp/receipt_{order_id}.pdf"
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
     
@@ -79,13 +79,18 @@ def generate_receipt_pdf(order_id, full_name, product_name, amount, pubg_id, pho
     return filename
 
 def cleanup_temp_files():
-    """Bot ishga tushganda downloads papkasini va qolgan PDF-larni tozalash."""
-    folders = ['downloads']
-    for folder in folders:
-        if os.path.exists(folder):
-            shutil.rmtree(folder)
-        os.makedirs(folder)
-    
-    for file in os.listdir('.'):
-        if file.startswith("receipt_") and file.endswith(".pdf"):
-            os.remove(file)
+    """Bot ishga tushganda vaqtinchalik fayllarni tozalash."""
+    tmp_folder = "/tmp/botdl"
+    if os.path.exists(tmp_folder):
+        shutil.rmtree(tmp_folder)
+    os.makedirs(tmp_folder)
+
+    # /tmp/ da qolgan receipt PDF larni o'chirish
+    tmp = "/tmp"
+    if os.path.exists(tmp):
+        for f in os.listdir(tmp):
+            if f.startswith("receipt_") and f.endswith(".pdf"):
+                try:
+                    os.remove(os.path.join(tmp, f))
+                except OSError:
+                    pass
