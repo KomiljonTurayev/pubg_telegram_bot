@@ -1,15 +1,23 @@
 import os
 import logging
 import tempfile
-from shazamio import Shazam
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+
+try:
+    from shazamio import Shazam
+    SHAZAM_AVAILABLE = True
+except ImportError:
+    SHAZAM_AVAILABLE = False
+    logging.getLogger(__name__).warning("shazamio o'rnatilmagan — Shazam funksiyasi o'chirilgan.")
 
 logger = logging.getLogger(__name__)
 PARSE_MODE = "HTML"
 
 
 async def _recognize(file_path: str) -> dict | None:
+    if not SHAZAM_AVAILABLE:
+        return None
     try:
         out = await Shazam().recognize(file_path)
         track = out.get("track")
@@ -39,6 +47,13 @@ async def _recognize(file_path: str) -> dict | None:
 
 async def handle_shazam_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    if not SHAZAM_AVAILABLE:
+        await msg.reply_text(
+            "⚠️ <b>Shazam funksiyasi hozircha mavjud emas.</b>\n"
+            "<i>Qo'shiq nomini matn sifatida yozing.</i>",
+            parse_mode=PARSE_MODE,
+        )
+        return
     status = await msg.reply_text("🎵 <i>Musiqa aniqlanmoqda...</i>", parse_mode=PARSE_MODE)
 
     msg_obj = msg.voice or msg.audio or msg.video or msg.video_note
