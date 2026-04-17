@@ -40,3 +40,6 @@ class Config:
     PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")  # Click yoki Payme
     # FFmpeg
     FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+
+    # Keep-alive: Render avtomatik beradi, local da bo'sh qoladi
+    SELF_URL = os.getenv("RENDER_EXTERNAL_URL", "")

@@ -1,8 +1,10 @@
 import logging
 import os
+import time
 import warnings
 import traceback
 import threading
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 warnings.filterwarnings("ignore", message=".*per_message=False.*", category=Warning)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, ReplyKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedAudio
@@ -500,6 +502,23 @@ def run_health_server():
     server.serve_forever()
 
 
+def keep_alive_ping():
+    """Har 14 daqiqada serverning o'ziga ping yuborib uxlab qolishini oldini oladi."""
+    url = Config.SELF_URL
+    if not url:
+        return
+    ping_url = url.rstrip("/") + "/"
+    # Birinchi ping uchun 14 daqiqa kutish
+    time.sleep(14 * 60)
+    while True:
+        try:
+            with urllib.request.urlopen(ping_url, timeout=10) as resp:
+                logger.info(f"Keep-alive ping: {resp.status} OK")
+        except Exception as e:
+            logger.warning(f"Keep-alive ping xatolik: {e}")
+        time.sleep(14 * 60)
+
+
 def main():
     if not Config.BOT_TOKEN:
         logger.error("BOT_TOKEN topilmadi! .env faylini tekshiring.")
@@ -507,6 +526,7 @@ def main():
 
     # Render uchun health-check serverni fon oqimida ishga tushirish
     threading.Thread(target=run_health_server, daemon=True).start()
+    threading.Thread(target=keep_alive_ping, daemon=True).start()
 
     # Vaqtinchalik fayllarni tozalash
     cleanup_temp_files()
