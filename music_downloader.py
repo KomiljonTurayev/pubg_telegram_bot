@@ -17,6 +17,9 @@ PARSE_MODE = "HTML"
 
 URL_REGEX = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
 
+TIKTOK_RE = re.compile(r"tiktok\.com|vm\.tiktok\.com", re.I)
+INSTAGRAM_RE = re.compile(r"instagram\.com|instagr\.am", re.I)
+
 VIDEO_QUALITIES = {
     "360": ("📱 360p  — Kichik", "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best[height<=360]"),
     "480": ("💻 480p  — O'rta",  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]"),
@@ -27,6 +30,14 @@ VIDEO_QUALITIES = {
 
 def is_url(text: str) -> bool:
     return re.search(URL_REGEX, text) is not None
+
+
+def _detect_platform(url: str) -> str:
+    if TIKTOK_RE.search(url):
+        return "tiktok"
+    if INSTAGRAM_RE.search(url):
+        return "instagram"
+    return "other"
 
 
 def _base_ydl_opts() -> dict:
@@ -246,8 +257,20 @@ async def handle_media_download(
         }
 
         if is_video:
-            fmt = VIDEO_QUALITIES.get(str(quality), VIDEO_QUALITIES["720"])[1] if quality else VIDEO_QUALITIES["720"][1]
-            ydl_opts["format"] = fmt
+            if quality == "social":
+                platform = context.user_data.get("last_platform", "other")
+                if platform == "tiktok":
+                    # H.265 oqimi TikTok da odatda suv belgisiz bo'ladi
+                    ydl_opts["format"] = (
+                        "bestvideo[vcodec^=h265]+bestaudio"
+                        "/bestvideo[vcodec^=hevc]+bestaudio"
+                        "/bestvideo+bestaudio/best"
+                    )
+                else:
+                    ydl_opts["format"] = "bestvideo+bestaudio/best"
+            else:
+                fmt = VIDEO_QUALITIES.get(str(quality), VIDEO_QUALITIES["720"])[1] if quality else VIDEO_QUALITIES["720"][1]
+                ydl_opts["format"] = fmt
             ydl_opts["merge_output_format"] = "mp4"
         else:
             ydl_opts["format"] = "bestaudio/best"
@@ -357,6 +380,9 @@ async def handle_incoming_link(update: Update, context: ContextTypes.DEFAULT_TYP
     if not is_url(url):
         return
 
+    platform = _detect_platform(url)
+    context.user_data["last_platform"] = platform
+
     status_msg = await update.message.reply_text(
         "🔍 <i>Havola tekshirilmoqda...</i>", parse_mode=PARSE_MODE
     )
@@ -374,15 +400,28 @@ async def handle_incoming_link(update: Update, context: ContextTypes.DEFAULT_TYP
     vid = info["id"] if info.get("extractor") == "Youtube" else "external"
     short_title = info["title"][:60] + "…" if len(info["title"]) > 60 else info["title"]
 
+    if platform == "tiktok":
+        platform_label = "📱 TikTok"
+        video_label = "🎬 Video (suv belgisiz)"
+        video_cb = "vdl_social_external"
+    elif platform == "instagram":
+        platform_label = "📸 Instagram"
+        video_label = "🎬 Video / Rasm"
+        video_cb = "vdl_social_external"
+    else:
+        platform_label = f"🌐 {info['extractor']}"
+        video_label = "🎬 Video  MP4"
+        video_cb = f"vq_{vid}"
+
     keyboard = [
         [
             InlineKeyboardButton("🎧 Audio  MP3", callback_data=f"dl_{vid}"),
-            InlineKeyboardButton("🎬 Video  MP4", callback_data=f"vq_{vid}"),
+            InlineKeyboardButton(video_label, callback_data=video_cb),
         ],
         [InlineKeyboardButton("❌  Bekor qilish", callback_data="cancel_dl")],
     ]
     await status_msg.edit_text(
-        f"🌐 <b>{info['extractor']}</b>  •  {short_title}\n"
+        f"{platform_label}  •  {short_title}\n"
         f"<code>─────────────────────</code>\n"
         f"⬇️  <i>Format tanlang:</i>",
         reply_markup=InlineKeyboardMarkup(keyboard),

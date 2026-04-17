@@ -19,6 +19,7 @@ from utils import admin_only, ban_check, create_stat_chart, generate_receipt_pdf
 from music_menu import SEARCH_MUSIC
 import music_search
 import music_downloader
+import shazam_handler
 
 # Buyurtma bosqichlari (Conversation states)
 GET_PUBG_ID, GET_PHONE, CONFIRM_ORDER = range(3)
@@ -75,6 +76,7 @@ async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🚀 <b>Mening Xizmatlarim:</b>\n\n"
         "• 🤖 <b>Telegram Botlar:</b> Murakkab va yuqori yuklamaga chidamli tizimlar.\n"
+        "• 📱 <b>Mobil Ilovalar:</b> Android va iOS uchun React Native / Flutter.\n"
         "• 🌐 <b>Web Backend:</b> Django, FastAPI va Flask orqali xavfsiz API'lar.\n"
         "• 📊 <b>Ma'lumotlar bazasi:</b> PostgreSQL, MySQL va MongoDB loyihalari.\n\n"
         "📩 <b>Muloqot uchun:</b> @developer_username\n"
@@ -160,12 +162,17 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def music_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Musiqa qidiruvini boshlash."""
     await update.message.reply_text(
-        "🎵 <b>Musiqa qidiruvi</b>\n"
+        "🎵 <b>Musiqa &amp; Media</b>\n"
         "<code>─────────────────────</code>\n"
-        "🔎 Qo'shiq nomi, ijrochi yoki YouTube havolasini yozing:\n\n"
-        "  • <i>Sherali Jo'rayev - Karvon</i>\n"
-        "  • <i>Dua Lipa - Levitating</i>\n"
-        "  • <i>youtube.com/watch?v=...</i>\n\n"
+        "📥 <b>Yuklab olish:</b>\n"
+        "  • YouTube — audio / video\n"
+        "  • TikTok — suv belgisiz video\n"
+        "  • Instagram — post, reels, stories\n\n"
+        "🔍 <b>Qidirish:</b>\n"
+        "  • Qo'shiq nomi yoki ijrochi\n"
+        "  • YouTube havolasini yuboring\n\n"
+        "🎙 <b>Shazam — musiqani aniqlash:</b>\n"
+        "  • Ovozli xabar, audio yoki video yuboring\n\n"
         "❌ <i>Chiqish uchun «bekor» yozing</i>",
         parse_mode=PARSE_MODE
     )
@@ -369,6 +376,37 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     except Exception as e:
         logger.error(f"PDF generatsiya qilishda xatolik: {e}")
 
+async def shazam_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shazam tomonidan topilgan qo'shiqni YouTube da qidirish va yuklash."""
+    query = update.callback_query
+    await query.answer()
+    search_q = context.user_data.get("shazam_query", "")
+    if not search_q:
+        await query.message.reply_text("❌ Qidiruv ma'lumoti topilmadi.")
+        return
+
+    status = await query.message.reply_text(
+        f"🔍 <b>Qidirilmoqda:</b> <i>{search_q[:50]}</i>",
+        parse_mode=PARSE_MODE,
+    )
+    results = await music_search.search_music(search_q)
+    if not results:
+        await status.edit_text(
+            "😔 <b>Topilmadi.</b>\n<i>Qo'lda nomini yozib qidiring.</i>",
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    reply_markup = music_search._build_results_keyboard(results)
+    await status.edit_text(
+        f"🎵 <b>«{search_q[:40]}»</b> natijalari:\n"
+        f"<code>─────────────────────</code>\n"
+        f"👇 <i>Tanlang:</i>",
+        reply_markup=reply_markup,
+        parse_mode=PARSE_MODE,
+    )
+
+
 async def cancel_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Jarayonni bekor qilish."""
     await update.message.reply_text("❌ Jarayon bekor qilindi.")
@@ -564,7 +602,13 @@ def main():
     music_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Text("🎵 Musiqa"), music_start)],
         states={
-            SEARCH_MUSIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, music_search.process_music_search)],
+            SEARCH_MUSIC: [
+                MessageHandler(
+                    filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE,
+                    shazam_handler.handle_shazam_request,
+                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, music_search.process_music_search),
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_process),
@@ -627,7 +671,13 @@ def main():
     app.add_handler(CallbackQueryHandler(music_downloader.handle_media_download, pattern="^(dl|vdl)_"))
     app.add_handler(CallbackQueryHandler(music_downloader.cancel_dl_callback, pattern="^cancel_dl$"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.message.delete(), pattern="^close_search$"))
+    app.add_handler(CallbackQueryHandler(shazam_dl_callback, pattern="^shazam_dl$"))
     app.add_handler(CallbackQueryHandler(update_status_callback, pattern="^st_"))
+    # Global Shazam: musiqa suhbatidan tashqarida ham ishlaydi
+    app.add_handler(MessageHandler(
+        filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE,
+        shazam_handler.handle_shazam_request,
+    ))
     app.add_handler(buy_conv)
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
