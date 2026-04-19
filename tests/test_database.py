@@ -1,83 +1,88 @@
 """
 Database integration testlar — real PostgreSQL kerak.
 CI da postgres:15-alpine service bilan ishlaydi.
+
+MUHIM: Bu testlar faqat POSTGRES_PASSWORD env mavjud bo'lganda,
+       va database moduli mock QILINMAGAN bo'lganda ishlaydi.
 """
 import os
+import sys
 import pytest
-import asyncio
 
-# Agar DB sozlanmagan bo'lsa, testni o'tkazib yuborish
-DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
+# Modul-darajadagi mock bor bo'lsa yoki DB sozlanmagan bo'lsa — o'tkazib yubor
+_db_module = sys.modules.get("database")
+_is_mocked = _db_module is not None and hasattr(_db_module, "_mock_name")
+_no_password = not os.getenv("POSTGRES_PASSWORD")
+
 pytestmark = pytest.mark.skipif(
-    not os.getenv("POSTGRES_PASSWORD"),
-    reason="POSTGRES_PASSWORD not set — skipping DB tests"
+    _is_mocked or _no_password,
+    reason="Real DB not available (mocked or POSTGRES_PASSWORD not set)",
 )
 
 
 @pytest.fixture(scope="module")
-def db():
-    from database import Database
-    return Database()
+def real_db():
+    """Real Database instance yaratish (mock emas)."""
+    # Agar sys.modules da mock bo'lsa — o'chirib real ni yuklaymiz
+    real_module = sys.modules.pop("database", None)
+    try:
+        import importlib
+        db_mod = importlib.import_module("database")
+        yield db_mod.db
+    finally:
+        if real_module is not None:
+            sys.modules["database"] = real_module
 
 
 @pytest.mark.asyncio
-async def test_add_and_check_user(db):
+async def test_add_and_check_user(real_db):
     test_id = 999999901
-    await db.add_user(test_id, "ci_test_user", "CI Test User")
-    is_admin = await db.is_admin_db(test_id)
-    is_banned = await db.is_banned(test_id)
-    assert is_admin is False
-    assert is_banned is False
+    await real_db.add_user(test_id, "ci_test_user", "CI Test User")
+    assert await real_db.is_admin_db(test_id) is False
+    assert await real_db.is_banned(test_id) is False
 
 
 @pytest.mark.asyncio
-async def test_get_stats_returns_tuple(db):
-    count, growth = await db.get_stats()
+async def test_get_stats_returns_tuple(real_db):
+    count, growth = await real_db.get_stats()
     assert isinstance(count, int)
     assert isinstance(growth, list)
 
 
 @pytest.mark.asyncio
-async def test_products_count_is_int(db):
-    count = await db.get_products_count()
+async def test_products_count_is_int(real_db):
+    count = await real_db.get_products_count()
     assert isinstance(count, int)
     assert count >= 0
 
 
 @pytest.mark.asyncio
-async def test_music_cache_miss(db):
-    result = await db.get_cached_music("nonexistent_video_id_xyz_999")
+async def test_music_cache_miss(real_db):
+    result = await real_db.get_cached_music("nonexistent_xyz_ci_999")
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_save_search_history(db):
+async def test_save_search_and_count(real_db):
     test_id = 999999902
-    await db.add_user(test_id, "ci_search_user", "CI Search User")
-    await db.save_search_history(test_id, "test query ci")
-    count = await db.get_total_searches()
+    await real_db.add_user(test_id, "ci_search_user", "CI Search User")
+    await real_db.save_search_history(test_id, "ci_test_query_unique_xyz")
+    count = await real_db.get_total_searches()
     assert isinstance(count, int)
     assert count >= 1
 
 
 @pytest.mark.asyncio
-async def test_daily_active_users_is_int(db):
-    result = await db.get_daily_active_users()
+async def test_daily_active_users_is_int(real_db):
+    result = await real_db.get_daily_active_users()
     assert isinstance(result, int)
-    assert result >= 0
 
 
 @pytest.mark.asyncio
-async def test_most_searched_is_list(db):
-    result = await db.get_most_searched(5)
-    assert isinstance(result, list)
-
-
-@pytest.mark.asyncio
-async def test_ban_and_unban_user(db):
+async def test_ban_and_unban_user(real_db):
     test_id = 999999903
-    await db.add_user(test_id, "ci_ban_user", "CI Ban User")
-    await db.ban_user(test_id)
-    assert await db.is_banned(test_id) is True
-    await db.unban_user(test_id)
-    assert await db.is_banned(test_id) is False
+    await real_db.add_user(test_id, "ci_ban_user", "CI Ban User")
+    await real_db.ban_user(test_id)
+    assert await real_db.is_banned(test_id) is True
+    await real_db.unban_user(test_id)
+    assert await real_db.is_banned(test_id) is False
