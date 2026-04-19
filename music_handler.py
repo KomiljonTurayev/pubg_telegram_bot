@@ -93,6 +93,7 @@ async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TY
         if cached:
             try:
                 await context.bot.send_audio(chat_id=update.effective_chat.id, audio=cached[0], title=cached[1], performer=cached[2], caption=f"🎵 {cached[1]}\n⚡️ <i>Keshdan yuborildi</i>", parse_mode=PARSE_MODE)
+                await db.increment_music_count(video_id)
                 return
             except Exception as e:
                 logging.error(f"Cache error: {e}")
@@ -150,6 +151,8 @@ async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TY
                 else:
                     uploader = info.get('uploader', 'Artist')
                     sent = await context.bot.send_audio(chat_id=update.effective_chat.id, audio=open(file_path, 'rb'), title=title, performer=uploader, caption=f"🎵 <b>{title}</b>", parse_mode=PARSE_MODE)
+                    if video_id != 'external':
+                        await db.increment_music_count(video_id)
                     if video_id != 'external': await db.cache_music(video_id, sent.audio.file_id, title, uploader)
 
                 await status_msg.delete()
