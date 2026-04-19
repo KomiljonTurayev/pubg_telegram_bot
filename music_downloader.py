@@ -1,11 +1,14 @@
 import os
 import gc
+import math
 import asyncio
+import shutil
 import yt_dlp
 import re
 import time
 import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import tempfile
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaVideo
 from telegram.ext import ContextTypes
 from database import db
 from config import Config
@@ -21,10 +24,10 @@ TIKTOK_RE = re.compile(r"tiktok\.com|vm\.tiktok\.com", re.I)
 INSTAGRAM_RE = re.compile(r"instagram\.com|instagr\.am", re.I)
 
 VIDEO_QUALITIES = {
-    "360": ("📱 360p  — Kichik", "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best[height<=360]"),
-    "480": ("💻 480p  — O'rta",  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]"),
-    "720": ("🖥️ 720p  — HD",     "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]"),
-    "1080": ("✨ 1080p — Full HD", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]"),
+    "360": ("📱 360p", "bestvideo[height<=360]+bestaudio/best[height<=360]"),
+    "480": ("💻 480p", "bestvideo[height<=480]+bestaudio/best[height<=480]"),
+    "720": ("🖥️ 720p", "bestvideo[height<=720]+bestaudio/best[height<=720]"),
+    "1080": ("✨ 1080p", "bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
 }
 
 
@@ -54,6 +57,61 @@ def _base_ydl_opts() -> dict:
     if Config.FFMPEG_PATH and Config.FFMPEG_PATH != "ffmpeg":
         opts["ffmpeg_location"] = Config.FFMPEG_PATH
     return opts
+
+
+async def compress_video(input_path: str, output_path: str, duration: float) -> bool:
+    """Videoni 48MB dan kichikroq qilish uchun bitrate-ni hisoblab siqish (re-encode)."""
+    # Maqsad: 48MB (Telegram limitidan biroz kamroq)
+    target_size_bits = 48 * 1024 * 1024 * 8
+    target_total_bitrate = target_size_bits / duration
+    
+    # Audio uchun 128kbps ajratamiz, qolgani video uchun (minimal 150kbps)
+    video_bitrate = max(int(target_total_bitrate - 128000), 150000)
+
+    cmd = [
+        Config.FFMPEG_PATH,
+        "-i", input_path,
+        "-c:v", "libx264",
+        "-b:v", str(video_bitrate),
+        "-preset", "veryfast", # Tezlik va sifat balansi
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-y",
+        "-loglevel", "error",
+        output_path
+    ]
+    process = await asyncio.create_subprocess_exec(*cmd)
+    await process.wait()
+    return os.path.exists(output_path) and os.path.getsize(output_path) <= 50 * 1024 * 1024
+
+
+async def split_video(input_path: str, folder: str, total_duration: float, ts: int) -> list:
+    """Videoni 48MB lik qismlarga bo'lish (FFmpeg yordamida)."""
+    file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
+    num_parts = math.ceil(file_size_mb / 48)
+    part_duration = total_duration / num_parts
+    parts = []
+
+    for i in range(num_parts):
+        start_time = i * part_duration
+        part_path = os.path.join(folder, f"dl_{ts}_part_{i}.mp4")
+        
+        # -c copy orqali qayta kodlamasdan tezkor bo'lish
+        cmd = [
+            Config.FFMPEG_PATH,
+            "-ss", str(start_time),
+            "-t", str(part_duration),
+            "-i", input_path,
+            "-c", "copy",
+            "-map", "0",
+            "-loglevel", "error",
+            part_path
+        ]
+        process = await asyncio.create_subprocess_exec(*cmd)
+        await process.wait()
+        if os.path.exists(part_path):
+            parts.append(part_path)
+    return parts
 
 
 async def get_link_info(url: str) -> dict | None:
@@ -244,7 +302,7 @@ async def handle_media_download(
             pass
 
     async with download_semaphore:
-        folder = "/tmp/botdl"
+        folder = os.path.join(tempfile.gettempdir(), "botdl")
         os.makedirs(folder, exist_ok=True)
         ts = int(time.time())
         out_stem = f"{folder}/dl_{ts}"
@@ -264,14 +322,20 @@ async def handle_media_download(
                     ydl_opts["format"] = (
                         "bestvideo[vcodec^=h265]+bestaudio"
                         "/bestvideo[vcodec^=hevc]+bestaudio"
-                        "/bestvideo+bestaudio/best"
+                        "/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
                     )
                 else:
-                    ydl_opts["format"] = "bestvideo+bestaudio/best"
+                    ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
             else:
                 fmt = VIDEO_QUALITIES.get(str(quality), VIDEO_QUALITIES["720"])[1] if quality else VIDEO_QUALITIES["720"][1]
                 ydl_opts["format"] = fmt
             ydl_opts["merge_output_format"] = "mp4"
+
+            # FFmpeg mavjudligini tekshirish
+            if not shutil.which("ffmpeg") and Config.FFMPEG_PATH == "ffmpeg":
+                logger.warning("FFmpeg topilmadi. Soddalashtirilgan formatga o'tilmoqda.")
+                ydl_opts["format"] = "best[ext=mp4]/best"
+
         else:
             ydl_opts["format"] = "bestaudio/best"
             ydl_opts["postprocessors"] = [{
@@ -281,35 +345,121 @@ async def handle_media_download(
             }]
 
         file_path = None
-        files_before = set(os.listdir(folder))
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = await loop.run_in_executor(
                     None, lambda: ydl.extract_info(video_url, download=True)
                 )
+                
+                # yt-dlp tomonidan yaratilgan aniq fayl yo'lini olish
+                if 'requested_downloads' in info:
+                    file_path = info['requested_downloads'][0]['filepath']
+                else:
+                    file_path = ydl.prepare_filename(info)
+                    if not is_video:
+                        file_path = os.path.splitext(file_path)[0] + ".mp3"
+
                 title = info.get("title", "Media")
                 uploader = info.get("uploader", "Artist")
 
-                if is_video:
-                    file_path = out_stem + ".mp4"
-                    if not os.path.exists(file_path):
-                        files_after = set(os.listdir(folder))
-                        new_files = files_after - files_before
-                        mp4_files = [f for f in new_files if f.endswith(".mp4")]
-                        if mp4_files:
-                            file_path = os.path.join(folder, mp4_files[0])
-                        else:
-                            raise FileNotFoundError(f"Merged MP4 not found. New files: {new_files}")
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"Yuklangan fayl topilmadi: {file_path}")
 
+                # Hajmni tekshirish (Bot API uchun 50MB limit)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                total_duration = info.get("duration")
+
+                if file_size_mb > 50:
+                    if is_video and shutil.which(Config.FFMPEG_PATH) and total_duration:
+                        # 1. Avval siqib ko'ramiz (15 daqiqadan qisqa videolar uchun)
+                        compressed_success = False
+                        if total_duration < 900:
+                            await status_msg.edit_text(
+                                "📉 <b>Video hajmi katta. Optimizatsiya qilinmoqda...</b>",
+                                parse_mode=PARSE_MODE,
+                            )
+                            compressed_path = os.path.join(folder, f"dl_{ts}_opt.mp4")
+                            if await compress_video(file_path, compressed_path, total_duration):
+                                file_path = compressed_path
+                                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                                compressed_success = True
+
+                        # 2. Siqish yordami bo'lmasa — qismlarga bo'lamiz
+                        video_parts = []
+                        if not compressed_success:
+                            await status_msg.edit_text(
+                                f"🎬 <b>Video {math.ceil(file_size_mb / 48)} qismga bo'linmoqda...</b>",
+                                parse_mode=PARSE_MODE,
+                            )
+                            video_parts = await split_video(file_path, folder, total_duration, ts)
+
+                        # 3. Qismlar mavjud bo'lsa ularga yuboramiz va chiqamiz
+                        if video_parts:
+                            CHUNK_SIZE = 10
+                            opened_files = []
+                            try:
+                                for i in range(0, len(video_parts), CHUNK_SIZE):
+                                    current_grp = (i // CHUNK_SIZE) + 1
+                                    total_grps = math.ceil(len(video_parts) / CHUNK_SIZE)
+                                    progress = int((current_grp / total_grps) * 100)
+                                    bar = "▓" * (progress // 10) + "░" * (10 - (progress // 10))
+                                    try:
+                                        await status_msg.edit_text(
+                                            f"🚀 <b>Yuborilmoqda...</b>\n"
+                                            f"<code>{bar}</code> {progress}%\n"
+                                            f"📦 Guruh: {current_grp}/{total_grps}",
+                                            parse_mode=PARSE_MODE,
+                                        )
+                                    except Exception:
+                                        pass
+
+                                    chunk_paths = video_parts[i : i + CHUNK_SIZE]
+                                    media_group = []
+                                    for j, part_path in enumerate(chunk_paths):
+                                        part_idx = i + j
+                                        if j == 0:
+                                            cap = (
+                                                f"🎬 <b>{title}</b>\n"
+                                                f"👤 <i>{uploader}</i>\n"
+                                                f"📦 Qismlar: {i+1}–{i+len(chunk_paths)}/{len(video_parts)}\n"
+                                                f"<code>─────────────────────</code>"
+                                            )
+                                        else:
+                                            cap = f"🎬 Qism {part_idx + 1}"
+                                        fh = open(part_path, "rb")
+                                        opened_files.append(fh)
+                                        media_group.append(
+                                            InputMediaVideo(media=fh, caption=cap, parse_mode=PARSE_MODE)
+                                        )
+                                    await context.bot.send_media_group(
+                                        chat_id=update.effective_chat.id, media=media_group
+                                    )
+                            finally:
+                                for fh in opened_files:
+                                    fh.close()
+                            await status_msg.delete()
+                            return
+                        # Aks holda (compressed_success=True): file_size_mb endi <=50,
+                        # quyidagi oddiy yuborish davom etadi.
+
+                    else:
+                        await status_msg.edit_text(
+                            f"⚠️ <b>Fayl juda katta ({file_size_mb:.1f} MB).</b>\n"
+                            "Telegram cheklovi (50MB) tufayli yuborib bo'lmadi.",
+                            parse_mode=PARSE_MODE,
+                        )
+                        return
+
+                if is_video:
                     qual_label = VIDEO_QUALITIES.get(str(quality), ("", ""))[0] if quality else "720p"
-                    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                     caption = (
                         f"🎬 <b>{title}</b>\n"
+                        f"👤 <i>{uploader}</i>\n"
                         f"<code>─────────────────────</code>\n"
                         f"📊 Sifat: {qual_label}  •  {file_size_mb:.1f} MB"
                     )
                     with open(file_path, "rb") as f:
-                        await context.bot.send_video(
+                        sent_video = await context.bot.send_video(
                             chat_id=update.effective_chat.id,
                             video=f,
                             caption=caption,
@@ -320,16 +470,6 @@ async def handle_media_download(
                             connect_timeout=30,
                         )
                 else:
-                    file_path = out_stem + ".mp3"
-                    if not os.path.exists(file_path):
-                        files_after = set(os.listdir(folder))
-                        new_files = files_after - files_before
-                        mp3_files = [f for f in new_files if f.endswith(".mp3")]
-                        if mp3_files:
-                            file_path = os.path.join(folder, mp3_files[0])
-                        else:
-                            raise FileNotFoundError(f"MP3 not found. New files: {new_files}")
-
                     caption = (
                         f"🎵 <b>{title}</b>\n"
                         f"👤 <i>{uploader}</i>\n"
@@ -355,11 +495,14 @@ async def handle_media_download(
 
         except Exception as e:
             logger.error(f"Download error: {e}")
-            await status_msg.edit_text(
-                "❌ <b>Yuklashda xatolik yuz berdi.</b>\n"
-                "<i>Fayl o'chirilgan, juda katta yoki internet muammosi bo'lishi mumkin.</i>",
-                parse_mode=PARSE_MODE,
-            )
+            error_msg = "❌ <b>Yuklashda xatolik yuz berdi.</b>\n"
+            if "sign in to confirm your age" in str(e).lower():
+                error_msg += "<i>Ushbu video yoshga doir cheklovga ega.</i>"
+            else:
+                error_msg += "<i>Fayl o'chirilgan, juda katta yoki internet muammosi bo'lishi mumkin.</i>"
+            
+            try: await status_msg.edit_text(error_msg, parse_mode=PARSE_MODE)
+            except: pass
         finally:
             # Shu download sessiyasida yaratilgan BARCHA fayllarni o'chirish
             for f in os.listdir(folder):

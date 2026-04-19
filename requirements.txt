@@ -4,4 +4,11 @@ psycopg2-binary
 python-dotenv
 matplotlib
 reportlab
-shazamio
+aiohttp
+aiohttp-retry
+aiofiles
+fastapi
+uvicorn
+
+# shazamio — Python 3.12 va pastroqda ishlaydi (3.13+ da audioop olib tashlangan)
+# shazamio

@@ -7,7 +7,11 @@ import threading
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 warnings.filterwarnings("ignore", message=".*per_message=False.*", category=Warning)
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, ReplyKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedAudio
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice,
+    ReplyKeyboardMarkup, KeyboardButton, InlineQueryResultArticle,
+    InputTextMessageContent, InlineQueryResultCachedAudio, WebAppInfo
+)
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, PreCheckoutQueryHandler, filters, ContextTypes, ConversationHandler, InlineQueryHandler
@@ -20,6 +24,10 @@ from music_menu import SEARCH_MUSIC
 import music_search
 import music_downloader
 import shazam_handler
+import trending as trending_mod
+import movie_handler
+
+BOT_START_TIME = time.time()
 
 # Buyurtma bosqichlari (Conversation states)
 GET_PUBG_ID, GET_PHONE, CONFIRM_ORDER = range(3)
@@ -47,10 +55,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     is_admin = user.id == Config.ADMIN_ID or await db.is_admin_db(user.id)
+    
     keyboard = [
-        ["👨‍💻 Portfolio", "🛒 Marketplace"],
-        ["🛍 Buyurtmalarim", "🎵 Musiqa"],
-        ["🔝 Top 10"],
+        ["🎵 Musiqa qidirish", "🎙 Shazam"],
+        ["🔝 Top 10", "👤 Profil va Bio"]
     ]
     if is_admin:
         keyboard.append(["📊 Statistika (Admin)", "📦 Barcha Buyurtmalar"])
@@ -59,11 +67,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     await update.message.reply_text(
-        f"👋 <b>Assalomu alaykum, {user.full_name}!</b>\n"
+        f"👋 <b>Assalomu alaykum, {user.full_name}! Musiqa olamiga xush kelibsiz.</b>\n"
         f"<code>─────────────────────</code>\n"
-        f"🎵  Musiqa yuklab olish\n"
-        f"🛒  Raqamli mahsulotlar\n"
-        f"👨‍💻  Dasturlash xizmatlari\n"
+        f"🔍  Istalgan qo'shiq nomini yozing\n"
+        f"🎙  Ovozli xabar orqali musiqani toping\n"
+        f"⚡️  YouTube-dan tezkor yuklab oling\n"
         f"<code>─────────────────────</code>\n"
         f"👇 <i>Kerakli bo'limni tanlang:</i>",
         reply_markup=reply_markup,
@@ -71,18 +79,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @ban_check
-async def show_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dasturchi xizmatlarini ko'rsatish."""
+async def show_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi profili va boshqa xizmatlarni (Market/Portfolio) ko'rsatish."""
+    MARKETPLACE_URL = f"{Config.SELF_URL}/market" if Config.SELF_URL else "https://sizning-saytingiz.uz/market"
+    
     text = (
-        "🚀 <b>Mening Xizmatlarim:</b>\n\n"
-        "• 🤖 <b>Telegram Botlar:</b> Murakkab va yuqori yuklamaga chidamli tizimlar.\n"
-        "• 📱 <b>Mobil Ilovalar:</b> Android va iOS uchun React Native / Flutter.\n"
-        "• 🌐 <b>Web Backend:</b> Django, FastAPI va Flask orqali xavfsiz API'lar.\n"
-        "• 📊 <b>Ma'lumotlar bazasi:</b> PostgreSQL, MySQL va MongoDB loyihalari.\n\n"
-        "📩 <b>Muloqot uchun:</b> @developer_username\n"
-        "<i>Sifat va xavfsizlik — ustuvor vazifamiz!</i>"
+        "👤 <b>Sizning Profilingiz va Qo'shimcha xizmatlar</b>\n"
+        f"<code>─────────────────────</code>\n"
+        "🛒 <b>Marketplace:</b> PUBG skinlari va UC xizmatlari.\n"
+        "👨‍💻 <b>Portfolio:</b> Dasturlash bo'yicha xizmatlarimiz.\n"
+        "🛍 <b>Buyurtmalar:</b> Xaridlaringiz tarixi.\n"
+        f"<code>─────────────────────</code>"
     )
-    await update.message.reply_text(text, parse_mode=PARSE_MODE)
+    
+    keyboard = [
+        [InlineKeyboardButton("🛒 Marketplace", web_app=WebAppInfo(url=MARKETPLACE_URL))],
+        [InlineKeyboardButton("👨‍💻 Dasturchi Portfoliosi", callback_data="view_portfolio")],
+        [InlineKeyboardButton("🛍 Buyurtmalarim", callback_data="my_orders_list")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
+
+@ban_check
+async def show_portfolio_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Portfolio ma'lumotlarini inline ko'rinishida chiqarish."""
+    query = update.callback_query
+    await query.answer()
+    text = (
+        "🚀 <b>Dasturlash Xizmatlari:</b>\n\n"
+        "• 🤖 <b>Botlar:</b> Murakkab Telegram tizimlari.\n"
+        "• 📱 <b>Mobil:</b> React Native & Flutter.\n"
+        "• 🌐 <b>Web:</b> FastAPI & Django backend.\n\n"
+        "📩 @developer_username"
+    )
+    keyboard = [[InlineKeyboardButton("⬅️ Ortga", callback_data="back_to_bio")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=PARSE_MODE)
 
 @ban_check
 async def show_marketplace(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -161,22 +196,24 @@ async def view_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def music_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Musiqa qidiruvini boshlash."""
-    await update.message.reply_text(
-        "🎵 <b>Musiqa &amp; Media</b>\n"
+    msg_text = (
+        "🎵 <b>Musiqa qidirish markazi</b>\n"
         "<code>─────────────────────</code>\n"
-        "📥 <b>Yuklab olish:</b>\n"
-        "  • YouTube — audio / video\n"
-        "  • TikTok — suv belgisiz video\n"
-        "  • Instagram — post, reels, stories\n\n"
-        "🔍 <b>Qidirish:</b>\n"
-        "  • Qo'shiq nomi yoki ijrochi\n"
-        "  • YouTube havolasini yuboring\n\n"
-        "🎙 <b>Shazam — musiqani aniqlash:</b>\n"
-        "  • Ovozli xabar, audio yoki video yuboring\n\n"
-        "❌ <i>Chiqish uchun «bekor» yozing</i>",
+    )
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(msg_text + "👇 Qo'shiq nomi yoki YouTube havolasini yuboring:", parse_mode=PARSE_MODE)
+    else:
+        await update.message.reply_text(msg_text + "👇 Qo'shiq nomi yoki YouTube havolasini yuboring:", parse_mode=PARSE_MODE)
+    return SEARCH_MUSIC
+
+async def shazam_btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shazam tugmasi bosilganda ko'rsatma berish."""
+    await update.message.reply_text(
+        "🎙 <b>Musiqani aniqlash uchun:</b>\n\n"
+        "Menga 5-10 soniyalik <b>ovozli xabar (voice)</b>, <b>audio</b> yoki <b>video</b> yuboring. Men uni darhol aniqlab beraman!",
         parse_mode=PARSE_MODE
     )
-    return SEARCH_MUSIC
 
 async def process_music_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """YouTube qidiruv natijalarini ko'rsatish."""
@@ -209,11 +246,14 @@ async def start_buy_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @ban_check
 async def show_my_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Foydalanuvchiga o'z buyurtmalarini ko'rsatish."""
+    query = update.callback_query
     user_id = update.effective_user.id
     orders = await db.get_user_orders(user_id)
     
+    if query: await query.answer()
+    
     if not orders:
-        await update.message.reply_text("📭 Sizda hali buyurtmalar mavjud emas.", parse_mode=PARSE_MODE)
+        await update.effective_message.reply_text("📭 Sizda hali buyurtmalar mavjud emas.", parse_mode=PARSE_MODE)
         return
 
     text = "<b>🛍 Buyurtmalaringiz tarixi:</b>\n\n"
@@ -229,7 +269,7 @@ async def show_my_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Holati: {status_emoji} {o[4]}\n\n"
         )
     
-    await update.message.reply_text(text, parse_mode=PARSE_MODE)
+    await update.effective_message.reply_text(text, parse_mode=PARSE_MODE)
 
 async def get_pubg_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """PUBG ID qabul qilish va telefonni so'rash (yoki xulosaga qaytish)."""
@@ -380,31 +420,43 @@ async def shazam_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Shazam tomonidan topilgan qo'shiqni YouTube da qidirish va yuklash."""
     query = update.callback_query
     await query.answer()
+    
+    shazam_info = context.user_data.get("shazam_info")
     search_q = context.user_data.get("shazam_query", "")
+    
     if not search_q:
-        await query.message.reply_text("❌ Qidiruv ma'lumoti topilmadi.")
+        await query.edit_message_text("❌ Qidiruv ma'lumoti topilmadi.")
         return
 
-    status = await query.message.reply_text(
-        f"🔍 <b>Qidirilmoqda:</b> <i>{search_q[:50]}</i>",
-        parse_mode=PARSE_MODE,
-    )
     results = await music_search.search_music(search_q)
     if not results:
-        await status.edit_text(
-            "😔 <b>Topilmadi.</b>\n<i>Qo'lda nomini yozib qidiring.</i>",
-            parse_mode=PARSE_MODE,
-        )
+        err_text = "😔 <b>Topilmadi.</b>\n<i>Qo'lda nomini yozib qidiring.</i>"
+        if query.message.photo:
+            await query.edit_message_caption(caption=err_text, parse_mode=PARSE_MODE)
+        else:
+            await query.edit_message_text(text=err_text, parse_mode=PARSE_MODE)
         return
 
-    reply_markup = music_search._build_results_keyboard(results)
-    await status.edit_text(
-        f"🎵 <b>«{search_q[:40]}»</b> natijalari:\n"
-        f"<code>─────────────────────</code>\n"
-        f"👇 <i>Tanlang:</i>",
-        reply_markup=reply_markup,
-        parse_mode=PARSE_MODE,
-    )
+    if shazam_info:
+        text = (
+            f"🎵 <b>{shazam_info['title']}</b>\n"
+            f"👤 <i>{shazam_info['artist']}</i>\n"
+            + (f"💿 {shazam_info['album']}\n" if shazam_info.get('album') else "")
+            + (f"🎸 Janr: {shazam_info.get('genre')}\n" if shazam_info.get('genre') else "")
+            + "<code>─────────────────────</code>\n"
+            "📥 <b>YouTube natijalari:</b>"
+        )
+    else:
+        text = (
+            f"🔍 <b>«{search_q[:40]}»</b> natijalari:\n"
+            f"<code>─────────────────────</code>"
+        )
+
+    reply_markup = music_search.build_results_keyboard(results)
+    if query.message.photo:
+        await query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
+    else:
+        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
 
 
 async def cancel_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,7 +468,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Barcha xatolarni markazlashgan holda boshqarish."""
     error = context.error
     if isinstance(error, Conflict):
-        logger.warning("⚠️ 409 Conflict: Boshqa bot instansiyasi ishlayapti. Qayta ulanilmoqda...")
+        logger.warning("[!] 409 Conflict: Boshqa bot instansiyasi ishlayapti. Qayta ulanilmoqda...")
         return
     if isinstance(error, (NetworkError, TimedOut)):
         logger.warning(f"Tarmoq xatoligi (avtomatik qayta uriniladi): {error}")
@@ -426,15 +478,120 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin uchun statistika grafigi bilan."""
-    total_users, growth = await db.get_stats()
+    """Admin uchun keng qamrovli statistika paneli."""
+    total_users, growth      = await db.get_stats()
+    total_searches           = await db.get_total_searches()
+    dau                      = await db.get_daily_active_users()
+    most_searched            = await db.get_most_searched(5)
+    cache_count              = await db.get_cache_count()
+    total_downloads          = await db.get_total_downloads()
+
+    uptime_sec  = int(time.time() - BOT_START_TIME)
+    uptime_str  = f"{uptime_sec // 3600}s {(uptime_sec % 3600) // 60}d {uptime_sec % 60}s"
+
+    top_queries = "\n".join(
+        f"  {i+1}. «{q[0][:30]}» — {q[1]} marta"
+        for i, q in enumerate(most_searched)
+    ) or "  (ma'lumot yo'q)"
+
+    text = (
+        f"📊 <b>Admin Panel</b>\n"
+        f"<code>──────────────────────</code>\n"
+        f"👥 Jami foydalanuvchilar: <b>{total_users}</b>\n"
+        f"🟢 Bugungi faol foydalanuvchilar: <b>{dau}</b>\n"
+        f"🔍 Jami qidiruvlar: <b>{total_searches}</b>\n"
+        f"📥 Jami yuklab olingan: <b>{total_downloads}</b>\n"
+        f"🎵 Keshlangan musiqalar: <b>{cache_count}</b>\n"
+        f"⏱ Bot uptime: <code>{uptime_str}</code>\n"
+        f"<code>──────────────────────</code>\n"
+        f"🔝 <b>Eng ko'p qidiruvlar:</b>\n{top_queries}"
+    )
+
     chart_buf = create_stat_chart(growth)
-    
     await update.message.reply_photo(
         photo=chart_buf,
-        caption=f"📈 <b>Bot statistikasi:</b>\n\nJami foydalanuvchilar: <b>{total_users}</b>",
-        parse_mode=PARSE_MODE
+        caption=text,
+        parse_mode=PARSE_MODE,
     )
+
+async def developer_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dasturchi haqida ma'lumot."""
+    text = (
+        "👨‍💻 <b>Dasturchi haqida</b>\n"
+        "<code>──────────────────────</code>\n"
+        "🧑 Ism: <b>Komiljon Turayev</b>\n"
+        "💼 Lavozim: <i>Android Developer & Software Engineer</i>\n"
+        "🐙 GitHub: <a href=\"https://github.com/KomiljonTurayev\">KomiljonTurayev</a>\n"
+        "📱 Telegram: @KomiljonTurayev\n"
+        "<code>──────────────────────</code>\n"
+        "🤖 <i>Bu bot Python + aiogram asosida qurilgan yuksak unumdorli media boti.</i>"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🐙 GitHub", url="https://github.com/KomiljonTurayev")],
+    ]
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=PARSE_MODE,
+        disable_web_page_preview=True,
+    )
+
+
+async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trending musiqa, video va filmlarni ko'rsatish."""
+    status = await update.message.reply_text(
+        "📡 <i>Trending ma'lumotlar yuklanmoqda...</i>", parse_mode=PARSE_MODE
+    )
+
+    music_list  = await trending_mod.get_trending_music()
+    videos_list = await trending_mod.get_trending_videos()
+
+    # ── Trending musiqalar ──────────────────────────────────
+    if music_list:
+        dz_cache = {r["deezer_id"]: r for r in music_list}
+        context.user_data["dz_cache"] = {**context.user_data.get("dz_cache", {}), **dz_cache}
+
+        music_text = "🔥 <b>Trending Musiqalar</b> (Deezer World Chart)\n<code>──────────────────────</code>\n"
+        keyboard = []
+        for i, t in enumerate(music_list[:10], 1):
+            music_text += f"{i}. <b>{t['artist']}</b> — {t['title']}  [{t['duration']}]\n"
+            label = f"{i}. {t['artist']} — {t['title']}"
+            if len(label) > 55:
+                label = label[:54] + "…"
+            keyboard.append([
+                InlineKeyboardButton(label, callback_data=f"dz_show_{t['deezer_id']}")
+            ])
+        keyboard.append([InlineKeyboardButton("❌ Yopish", callback_data="close_search")])
+
+        await status.edit_text(
+            music_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=PARSE_MODE,
+        )
+    else:
+        await status.edit_text("😔 Hozirda trending ma'lumotlar mavjud emas.", parse_mode=PARSE_MODE)
+        return
+
+    # ── Trending YouTube videolar (agar API key bor bo'lsa) ──
+    if videos_list:
+        vid_text = "🎬 <b>Trending YouTube Videolar</b>\n<code>──────────────────────</code>\n"
+        vid_keyboard = []
+        for i, v in enumerate(videos_list[:5], 1):
+            vid_text += f"{i}. {v['title'][:50]}\n   📺 {v['channel']}\n"
+            vid_keyboard.append([
+                InlineKeyboardButton(
+                    f"▶️ {v['title'][:40]}",
+                    callback_data=f"show_music_options_{v['video_id']}",
+                )
+            ])
+        vid_keyboard.append([InlineKeyboardButton("❌ Yopish", callback_data="close_search")])
+
+        await update.message.reply_text(
+            vid_text,
+            reply_markup=InlineKeyboardMarkup(vid_keyboard),
+            parse_mode=PARSE_MODE,
+        )
+
 
 @admin_only
 async def view_all_orders_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -600,7 +757,7 @@ def main():
 
     # Musiqa qidirish muloqoti
     music_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Text("🎵 Musiqa"), music_start)],
+        entry_points=[MessageHandler(filters.Text("🎵 Musiqa qidirish"), music_start)],
         states={
             SEARCH_MUSIC: [
                 MessageHandler(
@@ -653,9 +810,17 @@ def main():
         await update.inline_query.answer(inline_results, cache_time=300)
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Text("👨‍💻 Portfolio"), show_portfolio))
-    app.add_handler(MessageHandler(filters.Text("🛒 Marketplace"), show_marketplace))
-    app.add_handler(MessageHandler(filters.Text("🛍 Buyurtmalarim"), show_my_orders))
+    app.add_handler(CommandHandler("developer", developer_info))
+    app.add_handler(CommandHandler("trending", trending_command))
+    app.add_handler(CommandHandler("movies", movie_handler.handle_movie_search))
+    app.add_handler(CommandHandler("admin", admin_dashboard))
+    app.add_handler(MessageHandler(filters.Text("👤 Profil va Bio"), show_bio))
+    app.add_handler(MessageHandler(filters.Text("🎙 Shazam"), shazam_btn_handler))
+    app.add_handler(MessageHandler(filters.Text("🔥 Trending"), trending_command))
+    app.add_handler(CallbackQueryHandler(show_portfolio_inline, pattern="^view_portfolio$"))
+    app.add_handler(CallbackQueryHandler(show_my_orders, pattern="^my_orders_list$"))
+    app.add_handler(CallbackQueryHandler(show_bio, pattern="^back_to_bio$"))
+
     app.add_handler(MessageHandler(filters.Text("🔝 Top 10"), show_top_music))
     app.add_handler(MessageHandler(filters.Text("📦 Barcha Buyurtmalar"), view_all_orders_admin))
     app.add_handler(MessageHandler(filters.Text("📊 Statistika (Admin)"), admin_dashboard))
@@ -664,6 +829,15 @@ def main():
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(music_conv)
     app.add_handler(add_product_conv)
+
+    # Deezer callbacklari
+    app.add_handler(CallbackQueryHandler(music_search.show_deezer_track_options, pattern="^dz_show_"))
+    app.add_handler(CallbackQueryHandler(music_search.handle_deezer_download, pattern="^dz_(dl|vq)_"))
+    app.add_handler(CallbackQueryHandler(music_search.handle_deezer_preview, pattern="^dz_prev_"))
+
+    # Film callbacklari
+    app.add_handler(CallbackQueryHandler(movie_handler.handle_movie_detail, pattern="^movie_"))
+
     app.add_handler(CallbackQueryHandler(show_marketplace, pattern="^market_page_"))
     app.add_handler(CallbackQueryHandler(view_product, pattern="^view_pr_"))
     app.add_handler(CallbackQueryHandler(music_downloader.show_music_options, pattern="^show_music_options_"))
@@ -673,7 +847,7 @@ def main():
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.message.delete(), pattern="^close_search$"))
     app.add_handler(CallbackQueryHandler(shazam_dl_callback, pattern="^shazam_dl$"))
     app.add_handler(CallbackQueryHandler(update_status_callback, pattern="^st_"))
-    # Global Shazam: musiqa suhbatidan tashqarida ham ishlaydi
+
     app.add_handler(MessageHandler(
         filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE,
         shazam_handler.handle_shazam_request,

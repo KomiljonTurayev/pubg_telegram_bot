@@ -189,4 +189,34 @@ class Database:
         """
         return await self.run_async(q, (user_id,), fetchall=True)
 
+    # ── Admin panel statistikasi ────────────────────────────
+
+    async def get_total_searches(self) -> int:
+        res = await self.run_async("SELECT COUNT(*) FROM search_history", fetchone=True)
+        return res[0] if res else 0
+
+    async def get_daily_active_users(self) -> int:
+        q = "SELECT COUNT(DISTINCT user_id) FROM search_history WHERE search_date >= CURRENT_DATE"
+        res = await self.run_async(q, fetchone=True)
+        return res[0] if res else 0
+
+    async def get_most_searched(self, limit: int = 5) -> list:
+        """Eng ko'p qidirilgan so'zlar."""
+        q = """
+            SELECT query, COUNT(*) as cnt
+            FROM search_history
+            GROUP BY query
+            ORDER BY cnt DESC
+            LIMIT %s
+        """
+        return await self.run_async(q, (limit,), fetchall=True) or []
+
+    async def get_cache_count(self) -> int:
+        res = await self.run_async("SELECT COUNT(*) FROM music_cache", fetchone=True)
+        return res[0] if res else 0
+
+    async def get_total_downloads(self) -> int:
+        res = await self.run_async("SELECT COALESCE(SUM(download_count), 0) FROM music_cache", fetchone=True)
+        return res[0] if res else 0
+
 db = Database()

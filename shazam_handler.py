@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 import tempfile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -7,9 +8,12 @@ from telegram.ext import ContextTypes
 try:
     from shazamio import Shazam
     SHAZAM_AVAILABLE = True
-except ImportError:
+except Exception:
+    # Python 3.13+ da audioop olib tashlangan — shazamio ishlamaydi, graceful fallback
     SHAZAM_AVAILABLE = False
-    logging.getLogger(__name__).warning("shazamio o'rnatilmagan — Shazam funksiyasi o'chirilgan.")
+    logging.getLogger(__name__).warning(
+        "shazamio unavailable (Python 3.13+ compatibility issue) - Shazam disabled."
+    )
 
 logger = logging.getLogger(__name__)
 PARSE_MODE = "HTML"
@@ -35,6 +39,7 @@ async def _recognize(file_path: str) -> dict | None:
             "title":  track.get("title", ""),
             "artist": track.get("subtitle", ""),
             "album":  album,
+            "genre":  track.get("genres", {}).get("primary", ""),
             "cover":  (
                 track.get("images", {}).get("coverarthq")
                 or track.get("images", {}).get("coverart", "")
@@ -62,7 +67,7 @@ async def handle_shazam_request(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     ext = ".mp4" if (msg.video or msg.video_note) else (".mp3" if msg.audio else ".ogg")
-    tmp = tempfile.mktemp(suffix=ext, dir="/tmp")
+    tmp = os.path.join(tempfile.gettempdir(), f"shazam_{int(time.time())}{ext}")
 
     try:
         tg_file = await context.bot.get_file(msg_obj.file_id)
@@ -88,13 +93,16 @@ async def handle_shazam_request(update: Update, context: ContextTypes.DEFAULT_TY
     title  = result["title"]
     artist = result["artist"]
     album  = result["album"]
+    genre  = result.get("genre", "")
     search_q = f"{artist} - {title}" if artist else title
+    context.user_data["shazam_info"] = result
     context.user_data["shazam_query"] = search_q
 
     text = (
         f"🎵 <b>{title}</b>\n"
         f"👤 <i>{artist}</i>\n"
         + (f"💿 {album}\n" if album else "")
+        + (f"🎸 Janr: {genre}\n" if genre else "")
         + "<code>─────────────────────</code>"
     )
     keyboard = InlineKeyboardMarkup([

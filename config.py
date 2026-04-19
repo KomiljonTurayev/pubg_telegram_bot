@@ -43,3 +43,8 @@ class Config:
 
     # Keep-alive: Render avtomatik beradi, local da bo'sh qoladi
     SELF_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+
+    # Free external APIs
+    YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")   # YouTube Data API v3 (10k/day free)
+    OMDB_API_KEY    = os.getenv("OMDB_API_KEY", "")      # omdbapi.com (1k/day free)
+    # Deezer: auth shart emas, bepul ishlatiladi
