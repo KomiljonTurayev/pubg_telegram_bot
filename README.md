@@ -33,6 +33,9 @@ Ushbu Telegram bot orqali foydalanuvchilar PUBG mahsulotlarini sotib olishlari v
    POSTGRES_PASSWORD=password
    POSTGRES_HOST=localhost
    PAYMENT_TOKEN=your_payment_provider_token
+   SELF_URL=https://your-public-domain.uz
    ```
 
 4. Botni ishga tushiring: `python bot.py`
+
+`bot.py` endi Telegram polling bilan birga ichki FastAPI mini-app serverini ham ko'taradi. `SELF_URL` yoki Render'dagi `RENDER_EXTERNAL_URL` sozlangan bo'lsa, bot ichidagi `Marketplace` tugmasi `/market` mini-app sahifasini ochadi.

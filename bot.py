@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -5,7 +6,6 @@ import warnings
 import traceback
 import threading
 import urllib.request
-from http.server import HTTPServer, BaseHTTPRequestHandler
 warnings.filterwarnings("ignore", message=".*per_message=False.*", category=Warning)
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice,
@@ -26,6 +26,7 @@ import music_downloader
 import shazam_handler
 import trending as trending_mod
 import movie_handler
+import api as web_api
 
 BOT_START_TIME = time.time()
 
@@ -79,9 +80,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @ban_check
-async def show_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _legacy_show_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Foydalanuvchi profili va boshqa xizmatlarni (Market/Portfolio) ko'rsatish."""
-    MARKETPLACE_URL = f"{Config.SELF_URL}/market" if Config.SELF_URL else "https://sizning-saytingiz.uz/market"
+    marketplace_url = f"{Config.SELF_URL}/market" if Config.SELF_URL else None
+    MARKETPLACE_URL = marketplace_url or "https://example.invalid/market"
     
     text = (
         "👤 <b>Sizning Profilingiz va Qo'shimcha xizmatlar</b>\n"
@@ -97,6 +99,29 @@ async def show_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👨‍💻 Dasturchi Portfoliosi", callback_data="view_portfolio")],
         [InlineKeyboardButton("🛍 Buyurtmalarim", callback_data="my_orders_list")],
     ]
+    if marketplace_url:
+        keyboard = [
+            [InlineKeyboardButton("рџ›’ Marketplace", web_app=WebAppInfo(url=marketplace_url))],
+            [InlineKeyboardButton("рџ‘ЁвЂЌрџ’» Dasturchi Portfoliosi", callback_data="view_portfolio")],
+            [InlineKeyboardButton("рџ›Ќ Buyurtmalarim", callback_data="my_orders_list")],
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("рџ‘ЁвЂЌрџ’» Dasturchi Portfoliosi", callback_data="view_portfolio")],
+            [InlineKeyboardButton("рџ›Ќ Buyurtmalarim", callback_data="my_orders_list")],
+        ]
+        text += "\n\n<i>Marketplace tugmasi chiqishi uchun `SELF_URL` yoki `RENDER_EXTERNAL_URL` sozlanishi kerak.</i>"
+    if marketplace_url:
+        keyboard = [
+            [InlineKeyboardButton("Marketplace", web_app=WebAppInfo(url=marketplace_url))],
+            [InlineKeyboardButton("Portfolio", callback_data="view_portfolio")],
+            [InlineKeyboardButton("Buyurtmalarim", callback_data="my_orders_list")],
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("Portfolio", callback_data="view_portfolio")],
+            [InlineKeyboardButton("Buyurtmalarim", callback_data="my_orders_list")],
+        ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     if update.callback_query:
         await update.callback_query.answer()
@@ -118,6 +143,39 @@ async def show_portfolio_inline(update: Update, context: ContextTypes.DEFAULT_TY
     )
     keyboard = [[InlineKeyboardButton("⬅️ Ortga", callback_data="back_to_bio")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=PARSE_MODE)
+
+@ban_check
+async def show_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi profili va qo'shimcha xizmatlarni ko'rsatish."""
+    marketplace_url = f"{Config.SELF_URL}/market" if Config.SELF_URL else None
+    text = (
+        "<b>Profil va xizmatlar</b>\n"
+        "<code>---------------------</code>\n"
+        "Marketplace: PUBG skinlari va UC xizmatlari.\n"
+        "Portfolio: dasturlash bo'yicha xizmatlar.\n"
+        "Buyurtmalar: xaridlaringiz tarixi.\n"
+        "<code>---------------------</code>"
+    )
+
+    if marketplace_url:
+        keyboard = [
+            [InlineKeyboardButton("Marketplace", web_app=WebAppInfo(url=marketplace_url))],
+            [InlineKeyboardButton("Portfolio", callback_data="view_portfolio")],
+            [InlineKeyboardButton("Buyurtmalarim", callback_data="my_orders_list")],
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("Portfolio", callback_data="view_portfolio")],
+            [InlineKeyboardButton("Buyurtmalarim", callback_data="my_orders_list")],
+        ]
+        text += "\n\n<i>Marketplace tugmasi chiqishi uchun `SELF_URL` yoki `RENDER_EXTERNAL_URL` sozlanishi kerak.</i>"
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
 
 @ban_check
 async def show_marketplace(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -219,28 +277,114 @@ async def process_music_search(update: Update, context: ContextTypes.DEFAULT_TYP
     """YouTube qidiruv natijalarini ko'rsatish."""
     return await music_search.process_music_search(update, context)
 
-async def start_buy_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sotib olish jarayonini boshlash (PUBG ID so'rash)."""
-    query = update.callback_query
-    product_id = int(query.data.split("_")[1])
-    products = await db.get_products()
-    product = next((p for p in products if p[0] == product_id), None)
-
+async def _prepare_buy_context(context: ContextTypes.DEFAULT_TYPE, product_id: int):
+    """Tanlangan mahsulotni user_data ga yozish."""
+    product = await db.get_product_by_id(product_id)
     if not product:
-        await query.answer("Mahsulot topilmadi.")
-        return ConversationHandler.END
+        return None
 
     context.user_data['buy_product_id'] = product_id
     context.user_data['buy_product_name'] = product[1]
     context.user_data['buy_product_price'] = product[3]
     context.user_data['is_editing'] = False
-    
+    return product
+
+async def _legacy_start_buy_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sotib olish jarayonini boshlash (PUBG ID so'rash)."""
+    query = update.callback_query
+    product_id = int(query.data.split("_")[1])
+    product = await _prepare_buy_context(context, product_id)
+
+    if not product:
+        await query.answer("Mahsulot topilmadi.")
+        return ConversationHandler.END
+
+    await query.message.reply_text(
+        f"рџ›’ <b>{product[1]}</b> tanlandi.",
+        parse_mode=PARSE_MODE,
+    )
+
     await query.message.reply_text(
         "🆔 <b>PUBG ID raqamingizni kiriting:</b>\n"
         "(Masalan: 5123456789)",
         parse_mode=PARSE_MODE
     )
     await query.answer()
+    return GET_PUBG_ID
+
+@ban_check
+async def _legacy_handle_web_app_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mini App'dan tanlangan mahsulotni chat ichidagi buyurtma oqimiga ulash."""
+    message = update.message
+    data = getattr(getattr(message, "web_app_data", None), "data", "")
+
+    try:
+        payload = json.loads(data)
+        if payload.get("type") != "buy_product":
+            raise ValueError("unexpected payload type")
+        product_id = int(payload["product_id"])
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        await message.reply_text("вќЊ Mini App ma'lumoti noto'g'ri keldi. Qayta urinib ko'ring.")
+        return ConversationHandler.END
+
+    product = await _prepare_buy_context(context, product_id)
+    if not product:
+        await message.reply_text("вќЊ Tanlangan mahsulot topilmadi.")
+        return ConversationHandler.END
+
+    await message.reply_text(
+        f"рџ›’ <b>{product[1]}</b> marketplace'dan tanlandi.\n\n"
+        "рџ†” <b>PUBG ID raqamingizni kiriting:</b>\n"
+        "(Masalan: 5123456789)",
+        parse_mode=PARSE_MODE,
+    )
+    return GET_PUBG_ID
+
+async def start_buy_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sotib olish jarayonini boshlash (PUBG ID so'rash)."""
+    query = update.callback_query
+    product_id = int(query.data.split("_")[1])
+    product = await _prepare_buy_context(context, product_id)
+
+    if not product:
+        await query.answer("Mahsulot topilmadi.")
+        return ConversationHandler.END
+
+    await query.message.reply_text(
+        f"<b>{product[1]}</b> tanlandi.\n\n"
+        "<b>PUBG ID raqamingizni kiriting:</b>\n"
+        "(Masalan: 5123456789)",
+        parse_mode=PARSE_MODE,
+    )
+    await query.answer()
+    return GET_PUBG_ID
+
+@ban_check
+async def handle_web_app_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mini App'dan tanlangan mahsulotni chat ichidagi buyurtma oqimiga ulash."""
+    message = update.message
+    data = getattr(getattr(message, "web_app_data", None), "data", "")
+
+    try:
+        payload = json.loads(data)
+        if payload.get("type") != "buy_product":
+            raise ValueError("unexpected payload type")
+        product_id = int(payload["product_id"])
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        await message.reply_text("Mini App ma'lumoti noto'g'ri keldi. Qayta urinib ko'ring.")
+        return ConversationHandler.END
+
+    product = await _prepare_buy_context(context, product_id)
+    if not product:
+        await message.reply_text("Tanlangan mahsulot topilmadi.")
+        return ConversationHandler.END
+
+    await message.reply_text(
+        f"<b>{product[1]}</b> marketplace'dan tanlandi.\n\n"
+        "<b>PUBG ID raqamingizni kiriting:</b>\n"
+        "(Masalan: 5123456789)",
+        parse_mode=PARSE_MODE,
+    )
     return GET_PUBG_ID
 
 @ban_check
@@ -464,6 +608,11 @@ async def cancel_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Jarayon bekor qilindi.")
     return ConversationHandler.END
 
+async def close_search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inline qidiruv kartasini toza yopish."""
+    await update.callback_query.answer()
+    await update.callback_query.message.delete()
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Barcha xatolarni markazlashgan holda boshqarish."""
     error = context.error
@@ -487,7 +636,7 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_downloads          = await db.get_total_downloads()
 
     uptime_sec  = int(time.time() - BOT_START_TIME)
-    uptime_str  = f"{uptime_sec // 3600}s {(uptime_sec % 3600) // 60}d {uptime_sec % 60}s"
+    uptime_str  = f"{uptime_sec // 3600}h {(uptime_sec % 3600) // 60}m {uptime_sec % 60}s"
 
     top_queries = "\n".join(
         f"  {i+1}. «{q[0][:30]}» — {q[1]} marta"
@@ -524,7 +673,7 @@ async def developer_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🐙 GitHub: <a href=\"https://github.com/KomiljonTurayev\">KomiljonTurayev</a>\n"
         "📱 Telegram: @KomiljonTurayev\n"
         "<code>──────────────────────</code>\n"
-        "🤖 <i>Bu bot Python + aiogram asosida qurilgan yuksak unumdorli media boti.</i>"
+        "🤖 <i>Bu bot Python + python-telegram-bot asosida qurilgan media va marketplace boti.</i>"
     )
     keyboard = [
         [InlineKeyboardButton("🐙 GitHub", url="https://github.com/KomiljonTurayev")],
@@ -682,27 +831,16 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📢 Xabar {sent_count}/{len(users)} ta foydalanuvchiga yuborildi.")
 
 def run_health_server():
-    """Render uchun minimal HTTP health-check serveri."""
-    port = int(os.getenv("PORT", 10000))
-
-    class HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        def log_message(self, *args):
-            pass  # HTTP loglarni o'chirish
-
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
+    """Backward-compatible wrapper: FastAPI mini-app serverini ishga tushiradi."""
+    web_api.run_api_server()
 
 
 def keep_alive_ping():
-    """Har 14 daqiqada serverning o'ziga ping yuborib uxlab qolishini oldini oladi."""
+    """Har 14 daqiqada FastAPI health endpoint ga ping yuboradi."""
     url = Config.SELF_URL
     if not url:
         return
-    ping_url = url.rstrip("/") + "/"
+    ping_url = url.rstrip("/") + "/healthz"
     # Birinchi ping uchun 14 daqiqa kutish
     time.sleep(14 * 60)
     while True:
@@ -719,18 +857,22 @@ def main():
         logger.error("BOT_TOKEN topilmadi! .env faylini tekshiring.")
         return
 
-    # Render uchun health-check serverni fon oqimida ishga tushirish
-    threading.Thread(target=run_health_server, daemon=True).start()
+    # FastAPI mini-app serverini fon oqimida ishga tushirish
+    threading.Thread(target=web_api.run_api_server, daemon=True).start()
     threading.Thread(target=keep_alive_ping, daemon=True).start()
 
     # Vaqtinchalik fayllarni tozalash
     cleanup_temp_files()
 
-    app = ApplicationBuilder().token(Config.BOT_TOKEN).build()
+    telegram_app = ApplicationBuilder().token(Config.BOT_TOKEN).build()
+    app = telegram_app
 
     # Sotib olish muloqoti (Conversation)
     buy_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_buy_process, pattern="^buy_")],
+        entry_points=[
+            CallbackQueryHandler(start_buy_process, pattern="^buy_"),
+            MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_web_app_purchase),
+        ],
         states={
             GET_PUBG_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_pubg_id)],
             GET_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
@@ -844,7 +986,7 @@ def main():
     app.add_handler(CallbackQueryHandler(music_downloader.show_video_quality, pattern="^vq_"))
     app.add_handler(CallbackQueryHandler(music_downloader.handle_media_download, pattern="^(dl|vdl)_"))
     app.add_handler(CallbackQueryHandler(music_downloader.cancel_dl_callback, pattern="^cancel_dl$"))
-    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.message.delete(), pattern="^close_search$"))
+    app.add_handler(CallbackQueryHandler(close_search_callback, pattern="^close_search$"))
     app.add_handler(CallbackQueryHandler(shazam_dl_callback, pattern="^shazam_dl$"))
     app.add_handler(CallbackQueryHandler(update_status_callback, pattern="^st_"))
 

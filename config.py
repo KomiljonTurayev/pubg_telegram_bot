@@ -41,8 +41,8 @@ class Config:
     # FFmpeg
     FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 
-    # Keep-alive: Render avtomatik beradi, local da bo'sh qoladi
-    SELF_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+    # Public URL: Render yoki boshqa hosting uchun. Mini App tugmasi uchun kerak.
+    SELF_URL = (os.getenv("SELF_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
 
     # Free external APIs
     YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")   # YouTube Data API v3 (10k/day free)
