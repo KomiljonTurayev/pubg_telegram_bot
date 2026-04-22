@@ -80,56 +80,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @ban_check
-async def _legacy_show_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Foydalanuvchi profili va boshqa xizmatlarni (Market/Portfolio) ko'rsatish."""
-    marketplace_url = f"{Config.SELF_URL}/market" if Config.SELF_URL else None
-    MARKETPLACE_URL = marketplace_url or "https://example.invalid/market"
-    
-    text = (
-        "👤 <b>Sizning Profilingiz va Qo'shimcha xizmatlar</b>\n"
-        f"<code>─────────────────────</code>\n"
-        "🛒 <b>Marketplace:</b> PUBG skinlari va UC xizmatlari.\n"
-        "👨‍💻 <b>Portfolio:</b> Dasturlash bo'yicha xizmatlarimiz.\n"
-        "🛍 <b>Buyurtmalar:</b> Xaridlaringiz tarixi.\n"
-        f"<code>─────────────────────</code>"
-    )
-    
-    keyboard = [
-        [InlineKeyboardButton("🛒 Marketplace", web_app=WebAppInfo(url=MARKETPLACE_URL))],
-        [InlineKeyboardButton("👨‍💻 Dasturchi Portfoliosi", callback_data="view_portfolio")],
-        [InlineKeyboardButton("🛍 Buyurtmalarim", callback_data="my_orders_list")],
-    ]
-    if marketplace_url:
-        keyboard = [
-            [InlineKeyboardButton("рџ›’ Marketplace", web_app=WebAppInfo(url=marketplace_url))],
-            [InlineKeyboardButton("рџ‘ЁвЂЌрџ’» Dasturchi Portfoliosi", callback_data="view_portfolio")],
-            [InlineKeyboardButton("рџ›Ќ Buyurtmalarim", callback_data="my_orders_list")],
-        ]
-    else:
-        keyboard = [
-            [InlineKeyboardButton("рџ‘ЁвЂЌрџ’» Dasturchi Portfoliosi", callback_data="view_portfolio")],
-            [InlineKeyboardButton("рџ›Ќ Buyurtmalarim", callback_data="my_orders_list")],
-        ]
-        text += "\n\n<i>Marketplace tugmasi chiqishi uchun `SELF_URL` yoki `RENDER_EXTERNAL_URL` sozlanishi kerak.</i>"
-    if marketplace_url:
-        keyboard = [
-            [InlineKeyboardButton("Marketplace", web_app=WebAppInfo(url=marketplace_url))],
-            [InlineKeyboardButton("Portfolio", callback_data="view_portfolio")],
-            [InlineKeyboardButton("Buyurtmalarim", callback_data="my_orders_list")],
-        ]
-    else:
-        keyboard = [
-            [InlineKeyboardButton("Portfolio", callback_data="view_portfolio")],
-            [InlineKeyboardButton("Buyurtmalarim", callback_data="my_orders_list")],
-        ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=PARSE_MODE)
-
-@ban_check
 async def show_portfolio_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Portfolio ma'lumotlarini inline ko'rinishida chiqarish."""
     query = update.callback_query
@@ -273,6 +223,20 @@ async def shazam_btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode=PARSE_MODE
     )
 
+async def video_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Video yuborilganda conversion tugmasini ko'rsatish."""
+    msg = update.message
+    if msg.video or (msg.document and msg.document.mime_type.startswith("video/")):
+        keyboard = [[InlineKeyboardButton("📹 Video Note (Aylana) ga o'tkazish", callback_data=f"convert_vn")]]
+        await msg.reply_text(
+            "🎬 <b>Video qabul qilindi!</b>\nUni Telegram formatiga (aylana video) o'tkazmoqchimisiz?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_to_message_id=msg.message_id,
+            parse_mode=PARSE_MODE
+        )
+    else:
+        await shazam_handler.handle_shazam_request(update, context)
+
 async def process_music_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """YouTube qidiruv natijalarini ko'rsatish."""
     return await music_search.process_music_search(update, context)
@@ -288,57 +252,6 @@ async def _prepare_buy_context(context: ContextTypes.DEFAULT_TYPE, product_id: i
     context.user_data['buy_product_price'] = product[3]
     context.user_data['is_editing'] = False
     return product
-
-async def _legacy_start_buy_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sotib olish jarayonini boshlash (PUBG ID so'rash)."""
-    query = update.callback_query
-    product_id = int(query.data.split("_")[1])
-    product = await _prepare_buy_context(context, product_id)
-
-    if not product:
-        await query.answer("Mahsulot topilmadi.")
-        return ConversationHandler.END
-
-    await query.message.reply_text(
-        f"рџ›’ <b>{product[1]}</b> tanlandi.",
-        parse_mode=PARSE_MODE,
-    )
-
-    await query.message.reply_text(
-        "🆔 <b>PUBG ID raqamingizni kiriting:</b>\n"
-        "(Masalan: 5123456789)",
-        parse_mode=PARSE_MODE
-    )
-    await query.answer()
-    return GET_PUBG_ID
-
-@ban_check
-async def _legacy_handle_web_app_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mini App'dan tanlangan mahsulotni chat ichidagi buyurtma oqimiga ulash."""
-    message = update.message
-    data = getattr(getattr(message, "web_app_data", None), "data", "")
-
-    try:
-        payload = json.loads(data)
-        if payload.get("type") != "buy_product":
-            raise ValueError("unexpected payload type")
-        product_id = int(payload["product_id"])
-    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
-        await message.reply_text("вќЊ Mini App ma'lumoti noto'g'ri keldi. Qayta urinib ko'ring.")
-        return ConversationHandler.END
-
-    product = await _prepare_buy_context(context, product_id)
-    if not product:
-        await message.reply_text("вќЊ Tanlangan mahsulot topilmadi.")
-        return ConversationHandler.END
-
-    await message.reply_text(
-        f"рџ›’ <b>{product[1]}</b> marketplace'dan tanlandi.\n\n"
-        "рџ†” <b>PUBG ID raqamingizni kiriting:</b>\n"
-        "(Masalan: 5123456789)",
-        parse_mode=PARSE_MODE,
-    )
-    return GET_PUBG_ID
 
 async def start_buy_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sotib olish jarayonini boshlash (PUBG ID so'rash)."""
@@ -990,10 +903,11 @@ def main():
     app.add_handler(CallbackQueryHandler(close_search_callback, pattern="^close_search$"))
     app.add_handler(CallbackQueryHandler(shazam_dl_callback, pattern="^shazam_dl$"))
     app.add_handler(CallbackQueryHandler(update_status_callback, pattern="^st_"))
+    app.add_handler(CallbackQueryHandler(music_downloader.handle_direct_video_conversion, pattern="^convert_vn$"))
 
     app.add_handler(MessageHandler(
-        filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE,
-        shazam_handler.handle_shazam_request,
+        filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.MimeType("video/"),
+        video_message_handler,
     ))
     app.add_handler(buy_conv)
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))

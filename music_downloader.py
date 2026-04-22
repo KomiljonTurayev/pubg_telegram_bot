@@ -161,6 +161,113 @@ async def show_music_options(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+async def _ffmpeg_convert_to_video_note(input_path: str, output_path: str, target_duration: int, progress_callback=None) -> bool:
+    """Video faylni Telegram Video Note (aylana) formatiga o'tkazish."""
+    crop_expr = (
+        "crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2,"
+        "scale=240:240"
+    )
+    
+    ffmpeg_cmd = [
+        Config.FFMPEG_PATH,
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", input_path,
+        "-t", "60",
+        "-vf", crop_expr,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "28",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "96k",
+        "-ac", "1",
+        "-movflags", "+faststart",
+        "-progress", "pipe:1",
+        "-y", output_path,
+    ]
+
+    process = await asyncio.create_subprocess_exec(
+        *ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+
+    while True:
+        line = await process.stdout.readline()
+        if not line:
+            break
+        line_str = line.decode("utf-8", "ignore").strip()
+        if line_str.startswith("out_time_ms=") and progress_callback:
+            try:
+                current_ms = int(line_str.split("=", 1)[1])
+                percent = (current_ms / 1_000_000 / target_duration) * 100.0
+                await progress_callback(percent)
+            except Exception:
+                pass
+
+    await process.wait()
+    return process.returncode == 0 and os.path.exists(output_path)
+
+
+async def handle_direct_video_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botga yuborilgan videoni Video Note ga o'tkazish (Callback orqali)."""
+    query = update.callback_query
+    await query.answer("Jarayon boshlandi...")
+    
+    orig_msg = query.message.reply_to_message
+    if not orig_msg:
+        await query.edit_message_text("❌ Asl video topilmadi.")
+        return
+
+    video = orig_msg.video or orig_msg.video_note or orig_msg.document
+    status_msg = await query.edit_message_text("⏳ <b>Video qayta ishlanmoqda...</b>", parse_mode=PARSE_MODE)
+    
+    folder = os.path.join(tempfile.gettempdir(), "botdl")
+    os.makedirs(folder, exist_ok=True)
+    ts = int(time.time())
+    input_path = os.path.join(folder, f"input_{ts}")
+    output_path = os.path.join(folder, f"note_{ts}.mp4")
+
+    try:
+        file_obj = await context.bot.get_file(video.file_id)
+        await file_obj.download_to_drive(input_path)
+        
+        duration = getattr(video, 'duration', 60) or 60
+        target_duration = max(1, min(duration, 60))
+
+        async def progress(p):
+            filled = int(p // 10)
+            bar = "█" * filled + "░" * (10 - filled)
+            try:
+                await status_msg.edit_text(
+                    f"⏳ <b>Aylana shaklga keltirilmoqda...</b>\n<code>{bar}</code> {p:.1f}%",
+                    parse_mode=PARSE_MODE
+                )
+            except: pass
+
+        success = await _ffmpeg_convert_to_video_note(input_path, output_path, target_duration, progress)
+
+        if success:
+            with open(output_path, "rb") as vn_file:
+                await context.bot.send_video_note(
+                    chat_id=update.effective_chat.id,
+                    video_note=vn_file,
+                    length=240,
+                    duration=target_duration
+                )
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text("❌ Konvertatsiya xatosi.")
+
+    except Exception as e:
+        logger.error(f"Conversion error: {e}")
+        await status_msg.edit_text("❌ Xatolik yuz berdi.")
+    finally:
+        for f in [input_path, output_path]:
+            if os.path.exists(f):
+                try: os.remove(f)
+                except: pass
+
+
 async def download_and_send_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not query.data.startswith("vnote_"):
@@ -255,75 +362,16 @@ async def download_and_send_video_note(update: Update, context: ContextTypes.DEF
                 duration = int(info.get("duration") or 60) if isinstance(info, dict) else 60
             except Exception:
                 duration = 60
-            target_duration = max(1, min(duration, 60))
-
-            crop_expr = (
-                "crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2,"
-                "scale=240:240"
-            )
+        target_duration = max(1, min(duration, 60))
             video_note_path = out_stem + "_circle.mp4"
 
-            update_progress("Aylana shaklga keltirilmoqda...", 0.0)
+        async def progress_cb(p):
+            update_progress("Aylana shaklga keltirilmoqda...", p)
 
-            ffmpeg_cmd = [
-                Config.FFMPEG_PATH,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                file_path,
-                "-t",
-                "60",
-                "-vf",
-                crop_expr,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "28",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "96k",
-                "-ac",
-                "1",
-                "-movflags",
-                "+faststart",
-                "-progress",
-                "pipe:1",
-                "-y",
-                video_note_path,
-            ]
-
-            process = await asyncio.create_subprocess_exec(
-                *ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-            )
-
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-                line_str = line.decode("utf-8", "ignore").strip()
-                if line_str.startswith("out_time_ms="):
-                    try:
-                        current_ms = int(line_str.split("=", 1)[1])
-                        percent = (current_ms / 1_000_000 / target_duration) * 100.0
-                        update_progress("Aylana shaklga keltirilmoqda...", percent)
-                    except Exception:
-                        pass
-
-            await process.wait()
-
-            if process.returncode != 0 or not os.path.exists(video_note_path):
-                await status_msg.edit_text(
-                    "❌ <b>Konvertatsiya muvaffaqiyatsiz.</b>\n"
-                    "<i>FFmpeg xatoligi yoki video formati mos emas.</i>",
-                    parse_mode=PARSE_MODE,
-                )
-                return
+        success = await _ffmpeg_convert_to_video_note(file_path, video_note_path, target_duration, progress_cb)
+        if not success:
+            await status_msg.edit_text("❌ Konvertatsiya xatosi.", parse_mode=PARSE_MODE)
+            return
 
             with open(video_note_path, "rb") as vn_file:
                 await context.bot.send_video_note(
