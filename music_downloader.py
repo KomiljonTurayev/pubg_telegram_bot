@@ -8,6 +8,7 @@ import re
 import time
 import logging
 import tempfile
+import subprocess
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaVideo
 from telegram.ext import ContextTypes
 from database import db
@@ -148,6 +149,7 @@ async def show_music_options(update: Update, context: ContextTypes.DEFAULT_TYPE)
             InlineKeyboardButton("🎧 Audio  MP3", callback_data=f"dl_{video_id}"),
             InlineKeyboardButton("🎬 Video  MP4", callback_data=f"vq_{video_id}"),
         ],
+        [InlineKeyboardButton("📹 Video Note (Aylana)", callback_data=f"vnote_{video_id}")],
         [InlineKeyboardButton("❌  Bekor qilish", callback_data="cancel_dl")],
     ]
     await query.message.reply_text(
@@ -157,6 +159,204 @@ async def show_music_options(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=PARSE_MODE,
     )
+
+
+async def download_and_send_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data.startswith("vnote_"):
+        return
+
+    video_id = query.data[len("vnote_"):]
+    await query.answer("Video note tayyorlanmoqda...")
+
+    if video_id == "external":
+        video_url = context.user_data.get("last_url")
+    else:
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    if not video_url:
+        await query.message.reply_text("❌ Yuklab olish uchun havola topilmadi.")
+        return
+
+    if not shutil.which(Config.FFMPEG_PATH):
+        await query.message.reply_text(
+            "❌ <b>FFmpeg topilmadi.</b>\n"
+            "<i>Serverda ffmpeg o'rnatilgan bo'lishi kerak (Dockerfile'da bor).</i>",
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    status_msg = await query.message.reply_text(
+        "⏳ <b>Video yuklanmoqda...</b>\n"
+        "<code>──────────</code>  0%",
+        parse_mode=PARSE_MODE,
+    )
+
+    loop = asyncio.get_running_loop()
+    last_edit_time = 0
+
+    def update_progress(label: str, percent_val: float):
+        nonlocal last_edit_time
+        now = time.time()
+        if now - last_edit_time < 2.5:
+            return
+        last_edit_time = now
+
+        p = max(0.0, min(float(percent_val), 100.0))
+        filled = int(p // 10)
+        bar = "█" * filled + "░" * (10 - filled)
+        text = f"⏳ <b>{label}</b>\n<code>{bar}</code>  {p:.1f}%"
+        asyncio.run_coroutine_threadsafe(
+            status_msg.edit_text(text, parse_mode=PARSE_MODE), loop
+        )
+
+    def dl_hook(d):
+        if d.get("status") != "downloading":
+            return
+        p_str = (d.get("_percent_str") or "0%").replace("%", "").strip()
+        p_str = re.sub(r"\x1b\[[0-9;]*m", "", p_str)
+        try:
+            update_progress("Video yuklanmoqda...", float(p_str))
+        except Exception:
+            pass
+
+    folder = os.path.join(tempfile.gettempdir(), "botdl")
+    os.makedirs(folder, exist_ok=True)
+    ts = int(time.time())
+    out_stem = os.path.join(folder, f"dl_{ts}_vnote")
+    outtmpl = out_stem + ".%(ext)s"
+
+    ydl_opts = {
+        **_base_ydl_opts(),
+        "outtmpl": outtmpl,
+        "progress_hooks": [dl_hook],
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
+    }
+
+    file_path = None
+    try:
+        async with download_semaphore:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(video_url, download=True)
+                )
+                if isinstance(info, dict) and info.get("requested_downloads"):
+                    file_path = info["requested_downloads"][0].get("filepath")
+                if not file_path:
+                    file_path = ydl.prepare_filename(info)
+
+            if not file_path or not os.path.exists(file_path):
+                await status_msg.edit_text("❌ <b>Video fayl topilmadi.</b>", parse_mode=PARSE_MODE)
+                return
+
+            duration = 60
+            try:
+                duration = int(info.get("duration") or 60) if isinstance(info, dict) else 60
+            except Exception:
+                duration = 60
+            target_duration = max(1, min(duration, 60))
+
+            crop_expr = (
+                "crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2,"
+                "scale=240:240"
+            )
+            video_note_path = out_stem + "_circle.mp4"
+
+            update_progress("Aylana shaklga keltirilmoqda...", 0.0)
+
+            ffmpeg_cmd = [
+                Config.FFMPEG_PATH,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                file_path,
+                "-t",
+                "60",
+                "-vf",
+                crop_expr,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "28",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "96k",
+                "-ac",
+                "1",
+                "-movflags",
+                "+faststart",
+                "-progress",
+                "pipe:1",
+                "-y",
+                video_note_path,
+            ]
+
+            process = await asyncio.create_subprocess_exec(
+                *ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8", "ignore").strip()
+                if line_str.startswith("out_time_ms="):
+                    try:
+                        current_ms = int(line_str.split("=", 1)[1])
+                        percent = (current_ms / 1_000_000 / target_duration) * 100.0
+                        update_progress("Aylana shaklga keltirilmoqda...", percent)
+                    except Exception:
+                        pass
+
+            await process.wait()
+
+            if process.returncode != 0 or not os.path.exists(video_note_path):
+                await status_msg.edit_text(
+                    "❌ <b>Konvertatsiya muvaffaqiyatsiz.</b>\n"
+                    "<i>FFmpeg xatoligi yoki video formati mos emas.</i>",
+                    parse_mode=PARSE_MODE,
+                )
+                return
+
+            with open(video_note_path, "rb") as vn_file:
+                await context.bot.send_video_note(
+                    chat_id=update.effective_chat.id,
+                    video_note=vn_file,
+                    length=240,
+                    duration=target_duration,
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+
+            await status_msg.delete()
+
+    except Exception as e:
+        logger.error(f"Video note error: {e}")
+        try:
+            await status_msg.edit_text(
+                "❌ <b>Xatolik yuz berdi.</b>\n"
+                "<i>Fayl juda katta, o'chirilgan yoki internet muammosi bo'lishi mumkin.</i>",
+                parse_mode=PARSE_MODE,
+            )
+        except Exception:
+            pass
+    finally:
+        try:
+            for f in os.listdir(folder):
+                if f.startswith(f"dl_{ts}_vnote"):
+                    try:
+                        os.remove(os.path.join(folder, f))
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────────────────

@@ -20,7 +20,7 @@ from telegram.error import Conflict, NetworkError, TimedOut
 from config import Config
 from database import db
 from utils import admin_only, ban_check, create_stat_chart, generate_receipt_pdf, cleanup_temp_files
-from music_menu import SEARCH_MUSIC
+from music_menu import SEARCH_MUSIC # music_menu dan SEARCH_MUSIC import qilinadi
 import music_search
 import music_downloader
 import shazam_handler
@@ -985,6 +985,7 @@ def main():
     app.add_handler(CallbackQueryHandler(music_downloader.show_music_options, pattern="^show_music_options_"))
     app.add_handler(CallbackQueryHandler(music_downloader.show_video_quality, pattern="^vq_"))
     app.add_handler(CallbackQueryHandler(music_downloader.handle_media_download, pattern="^(dl|vdl)_"))
+    app.add_handler(CallbackQueryHandler(music_downloader.download_and_send_video_note, pattern="^vnote_")) # Yangi video note handler
     app.add_handler(CallbackQueryHandler(music_downloader.cancel_dl_callback, pattern="^cancel_dl$"))
     app.add_handler(CallbackQueryHandler(close_search_callback, pattern="^close_search$"))
     app.add_handler(CallbackQueryHandler(shazam_dl_callback, pattern="^shazam_dl$"))

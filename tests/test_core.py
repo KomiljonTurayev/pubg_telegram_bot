@@ -150,6 +150,44 @@ class TestMusicSearch:
 
 
 # ──────────────────────────────────────────────────────────────
+# 3b. Video Note option (YouTube)
+# ──────────────────────────────────────────────────────────────
+class TestVideoNote:
+    @pytest.mark.asyncio
+    async def test_show_music_options_includes_video_note_button(self, monkeypatch):
+        import music_downloader
+
+        async def fake_get_link_info(url: str):
+            return {"title": "Test title"}
+
+        monkeypatch.setattr(music_downloader, "get_link_info", fake_get_link_info)
+
+        captured = {}
+
+        async def reply_text(text, reply_markup=None, parse_mode=None, **kwargs):
+            captured["reply_markup"] = reply_markup
+            return mock.AsyncMock()
+
+        msg = mock.MagicMock()
+        msg.reply_text = reply_text
+
+        query = mock.MagicMock()
+        query.data = "show_music_options_abc123"
+        query.message = msg
+        query.answer = mock.AsyncMock()
+
+        upd = mock.MagicMock()
+        upd.callback_query = query
+
+        await music_downloader.show_music_options(upd, mock.MagicMock())
+
+        kb = captured["reply_markup"]
+        assert kb is not None
+        all_cbs = [btn.callback_data for row in kb.inline_keyboard for btn in row if btn.callback_data]
+        assert "vnote_abc123" in all_cbs
+
+
+# ──────────────────────────────────────────────────────────────
 # 4. Utils decorators
 # ──────────────────────────────────────────────────────────────
 class TestDecorators:
