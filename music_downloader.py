@@ -28,11 +28,12 @@ URL_REGEX = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0
 TIKTOK_RE = re.compile(r"tiktok\.com|vm\.tiktok\.com", re.I)
 INSTAGRAM_RE = re.compile(r"instagram\.com|instagr\.am", re.I)
 
+_FALLBACK = "/18/best[ext=mp4]/best"
 VIDEO_QUALITIES = {
-    "360": ("📱 360p", "bestvideo[height<=360]+bestaudio/best[height<=360]"),
-    "480": ("💻 480p", "bestvideo[height<=480]+bestaudio/best[height<=480]"),
-    "720": ("🖥️ 720p", "bestvideo[height<=720]+bestaudio/best[height<=720]"),
-    "1080": ("✨ 1080p", "bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
+    "360":  ("📱 360p",      f"bestvideo[height<=360]+bestaudio/best[height<=360]{_FALLBACK}"),
+    "480":  ("💻 480p",      f"bestvideo[height<=480]+bestaudio/best[height<=480]{_FALLBACK}"),
+    "720":  ("🖥️ 720p HD",  f"bestvideo[height<=720]+bestaudio/best[height<=720]{_FALLBACK}"),
+    "1080": ("✨ 1080p FHD", f"bestvideo[height<=1080]+bestaudio/best[height<=1080]{_FALLBACK}"),
 }
 
 
