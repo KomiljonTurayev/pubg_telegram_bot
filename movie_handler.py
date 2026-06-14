@@ -1,5 +1,7 @@
+import asyncio
 import aiohttp
 import logging
+import yt_dlp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from config import Config
@@ -111,6 +113,7 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
             "▶️ Trailer (YouTube)",
             url=f"https://www.youtube.com/results?search_query={title_encoded}+{year}+trailer"
         )],
+        [InlineKeyboardButton("📥 YouTube'dan topib yuklash", callback_data=f"movie_dl_{imdb_id}")],
         [InlineKeyboardButton("❌ Yopish", callback_data="close_search")],
     ]
 
@@ -130,3 +133,78 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass
 
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=PARSE_MODE)
+
+
+async def handle_movie_download_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """OMDB film ma'lumotidan YouTube'da qidirib natijalarni ko'rsatish."""
+    query = update.callback_query
+    await query.answer("YouTube'dan qidirilmoqda...")
+
+    imdb_id = query.data[len("movie_dl_"):]
+    movie = await _omdb({"i": imdb_id})
+    if not movie or movie.get("Response") == "False":
+        await query.answer("❌ Film ma'lumoti topilmadi.", show_alert=True)
+        return
+
+    title = movie.get("Title", "")
+    year = movie.get("Year", "")
+    search_q = f"{title} {year} full movie"
+
+    status_msg = await query.message.reply_text(
+        f"🔍 <i>YouTube'dan «{title}» qidirilmoqda...</i>",
+        parse_mode=PARSE_MODE
+    )
+
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+    try:
+        loop = asyncio.get_running_loop()
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            results = await loop.run_in_executor(
+                None, lambda: ydl.extract_info(f"ytsearch5:{search_q}", download=False)
+            )
+
+        entries = (results or {}).get("entries", [])
+        if not entries:
+            await status_msg.edit_text("😔 YouTube'da topilmadi. Qo'lda URL yuboring.")
+            return
+
+        keyboard = []
+        for entry in entries[:5]:
+            vid_title = (entry.get("title") or "")[:38]
+            vid_id = entry.get("id", "")
+            duration = entry.get("duration") or 0
+            dur_str = f"{duration // 3600}:{(duration % 3600) // 60:02d}" if duration > 0 else ""
+            label = f"▶️ {vid_title}" + (f" ({dur_str})" if dur_str else "")
+            keyboard.append([InlineKeyboardButton(label[:64], callback_data=f"movie_yt_{vid_id}")])
+
+        keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="close_search")])
+        await status_msg.edit_text(
+            f"🎬 <b>«{title}» — YouTube natijalari:</b>\n"
+            f"<i>Yuklab olish uchun tanlang:</i>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=PARSE_MODE,
+        )
+    except Exception as e:
+        logger.error(f"Movie YT search error: {e}")
+        await status_msg.edit_text("❌ YouTube'da qidirishda xatolik yuz berdi.")
+
+
+async def handle_movie_yt_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tanlangan YouTube videosini yuklab olish variantlarini ko'rsatish."""
+    query = update.callback_query
+    video_id = query.data[len("movie_yt_"):]
+    await query.answer("Format tanlang...")
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🎧 Audio MP3", callback_data=f"dl_{video_id}"),
+            InlineKeyboardButton("🎬 Video MP4", callback_data=f"vq_{video_id}"),
+        ],
+        [InlineKeyboardButton("📹 Video Note (Aylana)", callback_data=f"vnote_{video_id}")],
+        [InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_dl")],
+    ]
+    await query.message.reply_text(
+        "⬇️ <b>Format tanlang:</b>",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=PARSE_MODE,
+    )

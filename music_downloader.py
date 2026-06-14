@@ -278,43 +278,81 @@ async def _ffmpeg_convert_to_video_note(input_path: str, output_path: str, targe
     return process.returncode == 0 and os.path.exists(output_path)
 
 
+async def _ffmpeg_photo_to_video_note(input_path: str, output_path: str) -> bool:
+    """Rasmdan 5 soniyalik Video Note (aylana) yaratish."""
+    vf = (
+        "scale=240:240:force_original_aspect_ratio=decrease,"
+        "pad=240:240:(ow-iw)/2:(oh-ih)/2:black,"
+        "format=yuv420p"
+    )
+    cmd = [
+        Config.FFMPEG_PATH,
+        "-hide_banner", "-loglevel", "error",
+        "-loop", "1",
+        "-i", input_path,
+        "-t", "5",
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-movflags", "+faststart",
+        "-y", output_path,
+    ]
+    process = await asyncio.create_subprocess_exec(*cmd)
+    await process.wait()
+    return process.returncode == 0 and os.path.exists(output_path)
+
+
 async def handle_direct_video_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Botga yuborilgan videoni Video Note ga o'tkazish (Callback orqali)."""
+    """Botga yuborilgan video yoki rasmni Video Note ga o'tkazish (Callback orqali)."""
     query = update.callback_query
     await query.answer("Jarayon boshlandi...")
-    
+
     orig_msg = query.message.reply_to_message
     if not orig_msg:
-        await query.edit_message_text("❌ Asl video topilmadi.")
+        await query.edit_message_text("❌ Asl fayl topilmadi.")
         return
 
-    video = orig_msg.video or orig_msg.video_note or orig_msg.document
-    status_msg = await query.edit_message_text("⏳ <b>Video qayta ishlanmoqda...</b>", parse_mode=PARSE_MODE)
-    
+    is_photo = bool(orig_msg.photo)
+    media = (
+        orig_msg.photo[-1] if is_photo
+        else orig_msg.video or orig_msg.video_note or orig_msg.document
+    )
+    if not media:
+        await query.edit_message_text("❌ Video yoki rasm topilmadi.")
+        return
+
+    status_msg = await query.edit_message_text("⏳ <b>Qayta ishlanmoqda...</b>", parse_mode=PARSE_MODE)
+
     folder = DOWNLOADS_DIR
     os.makedirs(folder, exist_ok=True)
     ts = int(time.time())
-    input_path = os.path.join(folder, f"input_{ts}")
+    ext = ".jpg" if is_photo else ""
+    input_path = os.path.join(folder, f"input_{ts}{ext}")
     output_path = os.path.join(folder, f"note_{ts}.mp4")
 
     try:
-        file_obj = await context.bot.get_file(video.file_id)
+        file_obj = await context.bot.get_file(media.file_id)
         await file_obj.download_to_drive(input_path)
-        
-        duration = getattr(video, 'duration', 60) or 60
-        target_duration = max(1, min(duration, 60))
 
-        async def progress(p):
-            filled = int(p // 10)
-            bar = "█" * filled + "░" * (10 - filled)
-            try:
-                await status_msg.edit_text(
-                    f"⏳ <b>Aylana shaklga keltirilmoqda...</b>\n<code>{bar}</code> {p:.1f}%",
-                    parse_mode=PARSE_MODE
-                )
-            except: pass
+        if is_photo:
+            success = await _ffmpeg_photo_to_video_note(input_path, output_path)
+            target_duration = 5
+        else:
+            duration = getattr(media, 'duration', 60) or 60
+            target_duration = max(1, min(duration, 60))
 
-        success = await _ffmpeg_convert_to_video_note(input_path, output_path, target_duration, progress)
+            async def progress(p):
+                filled = int(p // 10)
+                bar = "█" * filled + "░" * (10 - filled)
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ <b>Aylana shaklga keltirilmoqda...</b>\n<code>{bar}</code> {p:.1f}%",
+                        parse_mode=PARSE_MODE
+                    )
+                except: pass
+
+            success = await _ffmpeg_convert_to_video_note(input_path, output_path, target_duration, progress)
 
         if success:
             with open(output_path, "rb") as vn_file:

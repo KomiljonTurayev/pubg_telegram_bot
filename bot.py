@@ -224,12 +224,21 @@ async def shazam_btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 async def video_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Video yuborilganda conversion tugmasini ko'rsatish."""
+    """Video yoki rasm yuborilganda conversion tugmasini ko'rsatish."""
     msg = update.message
-    if msg.video or (msg.document and msg.document.mime_type.startswith("video/")):
-        keyboard = [[InlineKeyboardButton("📹 Video Note (Aylana) ga o'tkazish", callback_data=f"convert_vn")]]
+    is_video = msg.video or (msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/"))
+    is_photo = bool(msg.photo)
+
+    if is_video or is_photo:
+        label = "🖼 Aylana videoga o'tkazish" if is_photo else "📹 Video Note (Aylana) ga o'tkazish"
+        text = (
+            "🖼 <b>Rasm qabul qilindi!</b>\nUni 5 soniyalik aylana videoga o'tkazmoqchimisiz?"
+            if is_photo else
+            "🎬 <b>Video qabul qilindi!</b>\nUni Telegram formatiga (aylana video) o'tkazmoqchimisiz?"
+        )
+        keyboard = [[InlineKeyboardButton(label, callback_data="convert_vn")]]
         await msg.reply_text(
-            "🎬 <b>Video qabul qilindi!</b>\nUni Telegram formatiga (aylana video) o'tkazmoqchimisiz?",
+            text,
             reply_markup=InlineKeyboardMarkup(keyboard),
             reply_to_message_id=msg.message_id,
             parse_mode=PARSE_MODE
@@ -904,9 +913,11 @@ def main():
     app.add_handler(CallbackQueryHandler(shazam_dl_callback, pattern="^shazam_dl$"))
     app.add_handler(CallbackQueryHandler(update_status_callback, pattern="^st_"))
     app.add_handler(CallbackQueryHandler(music_downloader.handle_direct_video_conversion, pattern="^convert_vn$"))
+    app.add_handler(CallbackQueryHandler(movie_handler.handle_movie_download_search, pattern="^movie_dl_"))
+    app.add_handler(CallbackQueryHandler(movie_handler.handle_movie_yt_download, pattern="^movie_yt_"))
 
     app.add_handler(MessageHandler(
-        filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.MimeType("video/"),
+        filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.MimeType("video/") | filters.PHOTO,
         video_message_handler,
     ))
     app.add_handler(buy_conv)
