@@ -1,22 +1,43 @@
-FROM python:3.11-slim
+# ── Stage 1: Build (Yig'ish bosqichi) ──────────────────────────
+FROM python:3.11-slim as builder
 
-# Tizim paketlarini o'rnatish (ffmpeg video konvertatsiya uchun zarur)
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
+WORKDIR /build
+
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Kompilyatsiya uchun zarur paketlar (agar kutubxonalar build talab qilsa)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+# Kutubxonalarni maxsus papkaga o'rnatamiz
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 2: Runtime (Ishga tushirish bosqichi) ──────────────
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Kutubxonalarni o'rnatish
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Faqat ish vaqtida kerak bo'ladigan paketlar (ffmpeg va minimal libpq)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Bot kodini nusxalash
+# Yuklab olingan fayllar uchun papka yaratish
+RUN mkdir -p /app/downloads
+
+# Builder stage-dan faqat o'rnatilgan paketlarni nusxalaymiz
+COPY --from=builder /install /usr/local
 COPY . .
 
-# FastAPI porti uchun muhit o'zgaruvchisi
 ENV PORT=8000
 EXPOSE 8000
 
-# Botni ishga tushirish
+# Volume orqali fayllarni boshqarish imkoniyati
+VOLUME ["/app/downloads"]
+
 CMD ["python", "bot.py"]

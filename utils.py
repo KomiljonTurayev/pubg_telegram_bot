@@ -88,7 +88,7 @@ def generate_receipt_pdf(order_id, full_name, product_name, amount, pubg_id, pho
 
 def cleanup_temp_files():
     """Bot ishga tushganda vaqtinchalik fayllarni tozalash."""
-    tmp_folder = os.path.join(tempfile.gettempdir(), "botdl")
+    tmp_folder = os.getenv("DOWNLOADS_DIR", "downloads")
     if os.path.exists(tmp_folder):
         shutil.rmtree(tmp_folder)
     os.makedirs(tmp_folder)

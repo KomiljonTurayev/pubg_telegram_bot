@@ -9,6 +9,8 @@ import time
 import logging
 import tempfile
 import subprocess
+import traceback
+import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaVideo
 from telegram.ext import ContextTypes
 from database import db
@@ -18,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 download_semaphore = asyncio.Semaphore(2)
 PARSE_MODE = "HTML"
+
+DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "downloads")
 
 URL_REGEX = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
 
@@ -115,21 +119,61 @@ async def split_video(input_path: str, folder: str, total_duration: float, ts: i
     return parts
 
 
+_YT_RE = re.compile(
+    r"(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})", re.I
+)
+
+async def _youtube_api_info(url: str) -> dict | None:
+    """YouTube Data API v3 orqali video metadata olish (yt-dlp fallback)."""
+    if not Config.YOUTUBE_API_KEY:
+        return None
+    m = _YT_RE.search(url)
+    if not m:
+        return None
+    video_id = m.group(1)
+    api_url = (
+        f"https://www.googleapis.com/youtube/v3/videos"
+        f"?part=snippet&id={video_id}&key={Config.YOUTUBE_API_KEY}"
+    )
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as s:
+            async with s.get(api_url) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+        items = data.get("items", [])
+        if not items:
+            return None
+        snip = items[0].get("snippet", {})
+        return {
+            "title":      snip.get("title", "Media"),
+            "extractor":  "Youtube",
+            "webpage_url": url,
+            "id":         video_id,
+        }
+    except Exception as e:
+        logger.warning(f"YouTube API fallback error: {e}")
+        return None
+
+
 async def get_link_info(url: str) -> dict | None:
     opts = {**_base_ydl_opts(), "extract_flat": True}
     try:
         loop = asyncio.get_running_loop()
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+            if info is None:
+                logger.warning(f"yt-dlp returned None for: {url}")
+                return await _youtube_api_info(url)
             return {
-                "title":    info.get("title", "Media"),
-                "extractor": info.get("extractor_key", "Link"),
+                "title":      info.get("title", "Media"),
+                "extractor":  info.get("extractor_key", "Link"),
                 "webpage_url": info.get("webpage_url", url),
-                "id":       info.get("id"),
+                "id":         info.get("id"),
             }
     except Exception as e:
-        logger.error(f"Link info error: {e}")
-        return None
+        logger.error(f"Link info error for {url}: {e}\n{traceback.format_exc()}")
+        return await _youtube_api_info(url)
 
 
 # ──────────────────────────────────────────────────────────
@@ -221,7 +265,7 @@ async def handle_direct_video_conversion(update: Update, context: ContextTypes.D
     video = orig_msg.video or orig_msg.video_note or orig_msg.document
     status_msg = await query.edit_message_text("⏳ <b>Video qayta ishlanmoqda...</b>", parse_mode=PARSE_MODE)
     
-    folder = os.path.join(tempfile.gettempdir(), "botdl")
+    folder = DOWNLOADS_DIR
     os.makedirs(folder, exist_ok=True)
     ts = int(time.time())
     input_path = os.path.join(folder, f"input_{ts}")
@@ -327,7 +371,7 @@ async def download_and_send_video_note(update: Update, context: ContextTypes.DEF
         except Exception:
             pass
 
-    folder = os.path.join(tempfile.gettempdir(), "botdl")
+    folder = DOWNLOADS_DIR
     os.makedirs(folder, exist_ok=True)
     ts = int(time.time())
     out_stem = os.path.join(folder, f"dl_{ts}_vnote")
@@ -362,16 +406,16 @@ async def download_and_send_video_note(update: Update, context: ContextTypes.DEF
                 duration = int(info.get("duration") or 60) if isinstance(info, dict) else 60
             except Exception:
                 duration = 60
-        target_duration = max(1, min(duration, 60))
+            target_duration = max(1, min(duration, 60))
             video_note_path = out_stem + "_circle.mp4"
 
-        async def progress_cb(p):
-            update_progress("Aylana shaklga keltirilmoqda...", p)
+            async def progress_cb(p):
+                update_progress("Aylana shaklga keltirilmoqda...", p)
 
-        success = await _ffmpeg_convert_to_video_note(file_path, video_note_path, target_duration, progress_cb)
-        if not success:
-            await status_msg.edit_text("❌ Konvertatsiya xatosi.", parse_mode=PARSE_MODE)
-            return
+            success = await _ffmpeg_convert_to_video_note(file_path, video_note_path, target_duration, progress_cb)
+            if not success:
+                await status_msg.edit_text("❌ Konvertatsiya xatosi.", parse_mode=PARSE_MODE)
+                return
 
             with open(video_note_path, "rb") as vn_file:
                 await context.bot.send_video_note(
@@ -550,7 +594,7 @@ async def handle_media_download(
             pass
 
     async with download_semaphore:
-        folder = os.path.join(tempfile.gettempdir(), "botdl")
+        folder = DOWNLOADS_DIR
         os.makedirs(folder, exist_ok=True)
         ts = int(time.time())
         out_stem = f"{folder}/dl_{ts}"
@@ -753,10 +797,12 @@ async def handle_media_download(
             except: pass
         finally:
             # Shu download sessiyasida yaratilgan BARCHA fayllarni o'chirish
+            # Bu, shuningdek, 50MB dan katta bo'lgan va yuborilmagan fayllarni ham o'chiradi.
             for f in os.listdir(folder):
                 if f.startswith(f"dl_{ts}"):
                     try:
                         os.remove(os.path.join(folder, f))
+                        logger.debug(f"Temporary file removed: {os.path.join(folder, f)}")
                     except OSError:
                         pass
             # Python garbage collector ni qo'lda ishga tushirish
