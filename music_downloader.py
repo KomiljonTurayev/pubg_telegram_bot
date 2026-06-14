@@ -376,6 +376,79 @@ async def handle_direct_video_conversion(update: Update, context: ContextTypes.D
                 except: pass
 
 
+async def auto_convert_to_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Video yoki rasmni darhol (so'rovsiz) Video Note ga o'tkazish."""
+    msg = update.message
+    is_photo = bool(msg.photo)
+    media = (
+        msg.photo[-1] if is_photo
+        else msg.video or (msg.document if msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/") else None)
+    )
+    if not media:
+        return
+
+    status_msg = await msg.reply_text(
+        "⏳ <b>Aylana formatga o'tkazilmoqda...</b>",
+        parse_mode=PARSE_MODE,
+        reply_to_message_id=msg.message_id,
+    )
+
+    folder = DOWNLOADS_DIR
+    os.makedirs(folder, exist_ok=True)
+    ts = int(time.time())
+    ext = ".jpg" if is_photo else ""
+    input_path = os.path.join(folder, f"input_{ts}{ext}")
+    output_path = os.path.join(folder, f"note_{ts}.mp4")
+
+    try:
+        file_obj = await context.bot.get_file(media.file_id)
+        await file_obj.download_to_drive(input_path)
+
+        if is_photo:
+            success = await _ffmpeg_photo_to_video_note(input_path, output_path)
+            target_duration = 5
+        else:
+            duration = getattr(media, 'duration', 60) or 60
+            target_duration = max(1, min(duration, 60))
+
+            async def progress(p):
+                filled = int(p // 10)
+                bar = "█" * filled + "░" * (10 - filled)
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ <b>Aylana shaklga keltirilmoqda...</b>\n<code>{bar}</code> {p:.1f}%",
+                        parse_mode=PARSE_MODE,
+                    )
+                except Exception:
+                    pass
+
+            success = await _ffmpeg_convert_to_video_note(input_path, output_path, target_duration, progress)
+
+        if success:
+            with open(output_path, "rb") as vn_file:
+                await context.bot.send_video_note(
+                    chat_id=update.effective_chat.id,
+                    video_note=vn_file,
+                    length=240,
+                    duration=target_duration,
+                )
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text(
+                "❌ Konvertatsiya xatosi. FFmpeg o'rnatilganini tekshiring."
+            )
+    except Exception as e:
+        logger.error(f"auto_convert_to_video_note error: {e}")
+        await status_msg.edit_text("❌ Xatolik yuz berdi.")
+    finally:
+        for f in [input_path, output_path]:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
+
 async def download_and_send_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not query.data.startswith("vnote_"):

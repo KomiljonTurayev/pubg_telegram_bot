@@ -224,25 +224,13 @@ async def shazam_btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 async def video_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Video yoki rasm yuborilganda conversion tugmasini ko'rsatish."""
+    """Video yoki rasm yuborilganda darhol aylana formatga o'tkazish."""
     msg = update.message
     is_video = msg.video or (msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/"))
     is_photo = bool(msg.photo)
 
     if is_video or is_photo:
-        label = "🖼 Aylana videoga o'tkazish" if is_photo else "📹 Video Note (Aylana) ga o'tkazish"
-        text = (
-            "🖼 <b>Rasm qabul qilindi!</b>\nUni 5 soniyalik aylana videoga o'tkazmoqchimisiz?"
-            if is_photo else
-            "🎬 <b>Video qabul qilindi!</b>\nUni Telegram formatiga (aylana video) o'tkazmoqchimisiz?"
-        )
-        keyboard = [[InlineKeyboardButton(label, callback_data="convert_vn")]]
-        await msg.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            reply_to_message_id=msg.message_id,
-            parse_mode=PARSE_MODE
-        )
+        await music_downloader.auto_convert_to_video_note(update, context)
     else:
         await shazam_handler.handle_shazam_request(update, context)
 
