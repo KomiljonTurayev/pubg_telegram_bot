@@ -90,6 +90,31 @@ async def compress_video(input_path: str, output_path: str, duration: float) -> 
     return os.path.exists(output_path) and os.path.getsize(output_path) <= 50 * 1024 * 1024
 
 
+async def split_audio(input_path: str, folder: str, total_duration: float, ts: int) -> list:
+    """MP3 faylni 48MB lik audio qismlarga bo'lish (FFmpeg yordamida)."""
+    file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
+    num_parts = math.ceil(file_size_mb / 48)
+    part_duration = total_duration / num_parts
+    parts = []
+    for i in range(num_parts):
+        start_time = i * part_duration
+        part_path = os.path.join(folder, f"dl_{ts}_audio_{i}.mp3")
+        cmd = [
+            Config.FFMPEG_PATH,
+            "-ss", str(start_time),
+            "-t", str(part_duration),
+            "-i", input_path,
+            "-c", "copy",
+            "-loglevel", "error",
+            part_path,
+        ]
+        process = await asyncio.create_subprocess_exec(*cmd)
+        await process.wait()
+        if os.path.exists(part_path):
+            parts.append(part_path)
+    return parts
+
+
 async def split_video(input_path: str, folder: str, total_duration: float, ts: int) -> list:
     """Videoni 48MB lik qismlarga bo'lish (FFmpeg yordamida)."""
     file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
@@ -661,8 +686,10 @@ async def handle_media_download(
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 total_duration = info.get("duration")
 
+                ffmpeg_ok = bool(shutil.which(Config.FFMPEG_PATH))
+
                 if file_size_mb > 50:
-                    if is_video and shutil.which(Config.FFMPEG_PATH) and total_duration:
+                    if is_video and ffmpeg_ok and total_duration:
                         # 1. Avval siqib ko'ramiz (15 daqiqadan qisqa videolar uchun)
                         compressed_success = False
                         if total_duration < 900:
@@ -734,10 +761,48 @@ async def handle_media_download(
                         # Aks holda (compressed_success=True): file_size_mb endi <=50,
                         # quyidagi oddiy yuborish davom etadi.
 
+                    elif not is_video and ffmpeg_ok and total_duration:
+                        # Audio > 50MB: FFmpeg bilan qismlarga bo'lib yuborish
+                        num_parts = math.ceil(file_size_mb / 48)
+                        await status_msg.edit_text(
+                            f"🎵 <b>Audio {num_parts} qismga bo'linmoqda...</b>\n"
+                            f"<i>{file_size_mb:.1f} MB — Telegram limiti: 50MB</i>",
+                            parse_mode=PARSE_MODE,
+                        )
+                        audio_parts = await split_audio(file_path, folder, total_duration, ts)
+                        if audio_parts:
+                            for i, part_path in enumerate(audio_parts):
+                                try:
+                                    await status_msg.edit_text(
+                                        f"🚀 <b>Yuborilmoqda...</b> {i+1}/{len(audio_parts)}",
+                                        parse_mode=PARSE_MODE,
+                                    )
+                                except Exception:
+                                    pass
+                                with open(part_path, "rb") as f:
+                                    await context.bot.send_audio(
+                                        chat_id=update.effective_chat.id,
+                                        audio=f,
+                                        title=f"{title} ({i+1}/{len(audio_parts)})",
+                                        performer=uploader,
+                                        caption=(
+                                            f"🎵 <b>{title}</b>\n"
+                                            f"👤 <i>{uploader}</i>\n"
+                                            f"📦 Qism {i+1}/{len(audio_parts)}"
+                                        ),
+                                        parse_mode=PARSE_MODE,
+                                        read_timeout=120,
+                                        write_timeout=120,
+                                    )
+                            await status_msg.delete()
+                            return
+                        # audio_parts bo'sh bo'lsa quyidagi umumiy xatoga tushadi
+
                     else:
+                        ffmpeg_hint = "" if ffmpeg_ok else "\n<i>FFmpeg o'rnatilsa bu muammo hal bo'ladi.</i>"
                         await status_msg.edit_text(
                             f"⚠️ <b>Fayl juda katta ({file_size_mb:.1f} MB).</b>\n"
-                            "Telegram cheklovi (50MB) tufayli yuborib bo'lmadi.",
+                            f"Telegram cheklovi (50MB) tufayli yuborib bo'lmadi.{ffmpeg_hint}",
                             parse_mode=PARSE_MODE,
                         )
                         return
