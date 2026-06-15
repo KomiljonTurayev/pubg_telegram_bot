@@ -387,6 +387,18 @@ async def auto_convert_to_video_note(update: Update, context: ContextTypes.DEFAU
     if not media:
         return
 
+    # Fayl hajmini tekshirish (Telegram Bot API max 20MB yuklab olishi mumkin)
+    file_size = getattr(media, 'file_size', None)
+    if file_size and file_size > 20 * 1024 * 1024:
+        mb = file_size / 1024 / 1024
+        await msg.reply_text(
+            f"❌ Fayl hajmi juda katta ({mb:.1f} MB).\n"
+            "Telegram bots maksimum 20 MB fayl yuklab olishi mumkin.\n"
+            "Iltimos, kichikroq video yuboring.",
+            reply_to_message_id=msg.message_id,
+        )
+        return
+
     status_msg = await msg.reply_text(
         "⏳ <b>Aylana formatga o'tkazilmoqda...</b>",
         parse_mode=PARSE_MODE,
@@ -396,7 +408,7 @@ async def auto_convert_to_video_note(update: Update, context: ContextTypes.DEFAU
     folder = DOWNLOADS_DIR
     os.makedirs(folder, exist_ok=True)
     ts = int(time.time())
-    ext = ".jpg" if is_photo else ""
+    ext = ".jpg" if is_photo else ".mp4"
     input_path = os.path.join(folder, f"input_{ts}{ext}")
     output_path = os.path.join(folder, f"note_{ts}.mp4")
 
